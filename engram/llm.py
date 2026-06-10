@@ -180,15 +180,20 @@ _RETRYABLE = {408, 409, 429, 500, 502, 503, 504, 524, 529}
 
 
 def _openai_request(payload: dict) -> dict:
-    """POST /chat/completions with retries. Returns choices[0].message.
+    """POST /chat/completions and return choices[0].message.
 
-    Retries transient failures (429 rate limits — common on free OpenRouter
-    models — 5xx, timeouts) with backoff, honoring Retry-After. Raises
-    LLMError with the provider's real error message instead of a bare
-    HTTP status, so the user sees WHY a turn failed."""
+    Uses STREAMING (SSE) and accumulates the deltas client-side. Long
+    reasoning turns (MiniMax M2/M3, DeepSeek-R1) can run for minutes; a
+    non-streaming request sits idle and gets killed by gateways/proxies
+    (524/timeout) — the classic 'works in other agents, fails here' cause.
+    With streaming, each chunk resets the read timeout.
+
+    Also retries transient failures (429/5xx/timeouts) with backoff honoring
+    Retry-After, and raises LLMError carrying the provider's real message."""
     headers = {
         "Authorization": f"Bearer {config.LLM_API_KEY}",
         "Content-Type": "application/json",
+        "Accept": "text/event-stream, application/json",
     }
     if config.PROVIDER == "openrouter":
         headers["HTTP-Referer"] = "https://github.com/fareza777/AGI-Agent"
@@ -199,20 +204,33 @@ def _openai_request(payload: dict) -> dict:
     last_err = "unknown error"
     last_status = None
     for attempt in range(attempts):
+        body = dict(payload)
+        body["stream"] = True
         try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=180)
+            # (connect, read) — read timeout is PER CHUNK on a streaming
+            # response, so heartbeats/deltas keep long turns alive.
+            resp = requests.post(url, json=body, headers=headers,
+                                 stream=True, timeout=(15, 120))
         except requests.RequestException as exc:
             last_err, last_status = f"koneksi gagal ({type(exc).__name__})", None
             time.sleep(2 ** attempt)
             continue
 
         if resp.status_code < 400:
-            data = resp.json()
-            choices = data.get("choices") or []
-            if not choices:
-                raise LLMError("provider mengembalikan respons kosong: "
-                               + str(data)[:200])
-            return choices[0]["message"]
+            ctype = resp.headers.get("content-type", "")
+            try:
+                if "event-stream" in ctype:
+                    return _accumulate_sse(resp.iter_lines(decode_unicode=True))
+                data = resp.json()  # provider ignored stream=true
+                choices = data.get("choices") or []
+                if not choices:
+                    raise ValueError(f"respons kosong: {str(data)[:200]}")
+                return choices[0]["message"]
+            except (requests.RequestException, ValueError) as exc:
+                last_err = f"stream terputus ({exc})"
+                last_status = None
+                time.sleep(2 ** attempt)
+                continue
 
         last_status = resp.status_code
         last_err = _provider_error(resp)
@@ -230,11 +248,60 @@ def _openai_request(payload: dict) -> dict:
 
     hint = ""
     if last_status == 429:
-        hint = " (model free sering kena rate limit — tunggu ~1 menit atau pakai model berbayar)"
+        hint = " (rate limit provider — tunggu sebentar)"
     elif last_status == 402:
         hint = " (kredit provider habis)"
     raise LLMError(f"provider error {last_status or ''}: {last_err}{hint}".strip(),
                    status=last_status)
+
+
+def _accumulate_sse(lines) -> dict:
+    """Fold an OpenAI-style SSE stream back into one message dict
+    (content + reasoning_content + tool_calls)."""
+    content, reasoning = [], []
+    tool_calls = {}
+    saw_chunk = False
+    for line in lines:
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if chunk.get("error"):
+            err = chunk["error"]
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            raise ValueError(f"provider mengirim error di stream: {msg}")
+        for choice in chunk.get("choices") or []:
+            saw_chunk = True
+            delta = choice.get("delta") or choice.get("message") or {}
+            if delta.get("content"):
+                content.append(delta["content"])
+            if delta.get("reasoning_content"):
+                reasoning.append(delta["reasoning_content"])
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index", 0)
+                slot = tool_calls.setdefault(
+                    idx, {"id": "", "type": "function",
+                          "function": {"name": "", "arguments": ""}})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name") and not slot["function"]["name"]:
+                    slot["function"]["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["function"]["arguments"] += fn["arguments"]
+    if not saw_chunk:
+        raise ValueError("stream kosong dari provider")
+    msg = {"role": "assistant", "content": "".join(content)}
+    if reasoning:
+        msg["reasoning_content"] = "".join(reasoning)
+    if tool_calls:
+        msg["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+    return msg
 
 
 def _provider_error(resp) -> str:
@@ -250,22 +317,46 @@ def _provider_error(resp) -> str:
     return (resp.text or "")[:300] or f"HTTP {resp.status_code}"
 
 
+def _merge_consecutive(messages: list) -> list:
+    """Merge adjacent same-role plain-text messages. Strict providers
+    (MiniMax among them) reject conversations where user/assistant roles
+    don't alternate — which our history can produce (e.g. a user message
+    following a failed turn)."""
+    out = []
+    for m in messages:
+        prev = out[-1] if out else None
+        if (prev is not None
+                and isinstance(m, dict) and isinstance(prev, dict)
+                and m.get("role") == prev.get("role")
+                and m.get("role") in ("user", "assistant")
+                and isinstance(m.get("content"), str)
+                and isinstance(prev.get("content"), str)
+                and "tool_calls" not in m and "tool_calls" not in prev):
+            prev["content"] = f"{prev['content']}\n\n{m['content']}".strip()
+        else:
+            out.append(dict(m) if isinstance(m, dict) else m)
+    return out
+
+
 def _openai_chat(model: str, system: str, messages: list, max_tokens: int, ctx) -> str:
-    convo = ([{"role": "system", "content": system}]
-             + _convert_messages(messages, _image_blocks_openai))
+    convo = _merge_consecutive(
+        [{"role": "system", "content": system}]
+        + _convert_messages(messages, _image_blocks_openai))
     payload = {"model": model, "max_tokens": max_tokens, "messages": convo}
     if ctx is not None:
         payload["tools"] = tools.openai_tool_specs()
 
     for _ in range(config.MAX_TOOL_ITERS):
         msg = _openai_vision_request(payload)
-        calls = msg.get("tool_calls") or []
-        if not calls or ctx is None:
+        if not (msg.get("tool_calls") or []) or ctx is None:
             return _visible_text(msg)
         # Echo back ONLY the standard fields. Some models attach extras
         # (reasoning, refusal, provider metadata) that other requests then
-        # reject with 400 — a classic intermittent-failure source.
-        convo.append(_clean_assistant(msg))
+        # reject with 400 — a classic intermittent-failure source. Iterate the
+        # CLEANED calls so tool_call_id always matches what we echoed.
+        cleaned = _clean_assistant(msg)
+        convo.append(cleaned)
+        calls = cleaned["tool_calls"]
         for call in calls:
             fn = call.get("function", {})
             try:
@@ -290,12 +381,16 @@ def _openai_chat(model: str, system: str, messages: list, max_tokens: int, ctx) 
 
 def _clean_assistant(msg: dict) -> dict:
     """Reduce an assistant message to the fields every OpenAI-compatible
-    endpoint accepts back: role, content, tool_calls."""
+    endpoint accepts back: role, content, tool_calls. MiniMax additionally
+    gets reasoning_content echoed — their interleaved-thinking models are
+    documented to perform better when it's kept in multi-turn history."""
     out = {"role": "assistant", "content": msg.get("content") or ""}
+    if config.PROVIDER == "minimax" and msg.get("reasoning_content"):
+        out["reasoning_content"] = msg["reasoning_content"]
     calls = []
-    for c in msg.get("tool_calls") or []:
+    for i, c in enumerate(msg.get("tool_calls") or []):
         fn = c.get("function") or {}
-        calls.append({"id": c.get("id", ""), "type": "function",
+        calls.append({"id": c.get("id") or f"call_{i}", "type": "function",
                       "function": {"name": fn.get("name", ""),
                                    "arguments": fn.get("arguments") or "{}"}})
     if calls:

@@ -435,6 +435,80 @@ class ProviderRobustnessTests(unittest.TestCase):
         self.assertIn("provider", describe_error(ValueError("boom")))
 
 
+class StreamingAndStrictProviderTests(unittest.TestCase):
+    """SSE accumulation + message normalization for strict providers (MiniMax)."""
+
+    def test_accumulate_sse_text(self):
+        from engram.llm import _accumulate_sse
+        lines = [
+            'data: {"choices":[{"delta":{"role":"assistant","content":"Ha"}}]}',
+            "",  # keep-alive
+            'data: {"choices":[{"delta":{"content":"lo!"}}]}',
+            'data: {"choices":[{"delta":{"reasoning_content":"mikir dulu"}}]}',
+            "data: [DONE]",
+        ]
+        msg = _accumulate_sse(iter(lines))
+        self.assertEqual(msg["content"], "Halo!")
+        self.assertEqual(msg["reasoning_content"], "mikir dulu")
+
+    def test_accumulate_sse_tool_calls(self):
+        from engram.llm import _accumulate_sse
+        lines = [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c9",'
+            '"function":{"name":"web_search","arguments":""}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+            '"function":{"arguments":"{\\"query\\":"}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+            '"function":{"arguments":"\\"x\\"}"}}]}}]}',
+            "data: [DONE]",
+        ]
+        msg = _accumulate_sse(iter(lines))
+        call = msg["tool_calls"][0]
+        self.assertEqual(call["id"], "c9")
+        self.assertEqual(call["function"]["name"], "web_search")
+        self.assertEqual(call["function"]["arguments"], '{"query":"x"}')
+
+    def test_accumulate_sse_error_and_empty(self):
+        from engram.llm import _accumulate_sse
+        with self.assertRaises(ValueError):
+            _accumulate_sse(iter(['data: {"error":{"message":"boom"}}']))
+        with self.assertRaises(ValueError):
+            _accumulate_sse(iter(["", ": ping"]))
+
+    def test_merge_consecutive_users(self):
+        from engram.llm import _merge_consecutive
+        convo = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "halo"},
+            {"role": "user", "content": "buat laporan"},   # after a failed turn
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "lanjut"},
+        ]
+        merged = _merge_consecutive(convo)
+        self.assertEqual(len(merged), 4)
+        self.assertEqual(merged[1]["content"], "halo\n\nbuat laporan")
+        # tool sequences and list-content (images) are left untouched
+        toolish = [{"role": "assistant", "content": "", "tool_calls": [{}]},
+                   {"role": "assistant", "content": "x"}]
+        self.assertEqual(len(_merge_consecutive(toolish)), 2)
+
+    def test_clean_assistant_minimax_reasoning_and_fallback_ids(self):
+        from engram import config as cfg
+        from engram.llm import _clean_assistant
+        msg = {"role": "assistant", "content": "ok", "reasoning_content": "r",
+               "tool_calls": [{"function": {"name": "recall", "arguments": "{}"}}]}
+        orig = cfg.PROVIDER
+        try:
+            cfg.PROVIDER = "minimax"
+            out = _clean_assistant(msg)
+            self.assertEqual(out["reasoning_content"], "r")
+            self.assertEqual(out["tool_calls"][0]["id"], "call_0")  # synthesized
+            cfg.PROVIDER = "openrouter"
+            self.assertNotIn("reasoning_content", _clean_assistant(msg))
+        finally:
+            cfg.PROVIDER = orig
+
+
 class ParseJsonTests(unittest.TestCase):
     """parse_json handles the messy outputs of OpenAI-compatible providers."""
 

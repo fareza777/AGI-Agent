@@ -280,6 +280,12 @@ ENGRAM_CHAT_MODEL=your-model-id
 Notes:
 - Model IDs are provider-specific — for non-Anthropic providers you must set
   `ENGRAM_CHAT_MODEL` explicitly (the startup check will tell you if you forget).
+- The OpenAI-compatible path **streams (SSE)** and accumulates deltas
+  client-side — long reasoning turns (MiniMax M2/M3, DeepSeek-R1) aren't
+  killed by gateway idle-timeouts. Transient failures retry with backoff.
+- Histories are normalized for strict providers (roles forced to alternate),
+  assistant echoes are reduced to standard fields, and MiniMax gets
+  `reasoning_content` passed back per their multi-turn recommendation.
 - Memory consolidation needs the model to return clean JSON. On Anthropic this
   is enforced by native structured outputs; on other providers Engram instructs
   the model and parses defensively — strong instruction-following models
