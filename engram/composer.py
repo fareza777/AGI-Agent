@@ -36,7 +36,12 @@ not shown here.
   don't guess.
 - schedule_reminder: when the user asks to be reminded, schedule it (compute
   the UTC time from the current time below) and confirm the exact time back.
-- use_skill: load a skill when the task matches its description."""
+- use_skill: load a skill when the task matches its description.
+- create_skill: when the user teaches you a procedure or asks you to remember
+  how to do something, save it as a skill so you never have to be told again.
+- improve_skill: when experience shows a skill's steps were wrong or
+  incomplete (a step failed, the user corrected you), read the skill with
+  use_skill and save an upgraded version with a changelog."""
 
 
 def build_context(store: Store, chat_id: str, user_text: str) -> tuple:

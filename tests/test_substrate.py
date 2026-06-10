@@ -150,6 +150,66 @@ class SkillsTests(unittest.TestCase):
         self.assertEqual(skills.load("missing"), "")
 
 
+class SkillLearningTests(unittest.TestCase):
+    """The S8 lifecycle: create from conversation, upgrade from experience,
+    draft → approve. Runs against a temp skills dir."""
+
+    def setUp(self):
+        from engram import config
+        self._orig_dir = config.SKILLS_DIR
+        self.tmpdir = tempfile.mkdtemp()
+        config.SKILLS_DIR = __import__("pathlib").Path(self.tmpdir)
+        fd, self.dbpath = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.dbpath)
+        self.ctx = ToolContext(self.store, "c1")
+
+    def tearDown(self):
+        import shutil
+        from engram import config
+        config.SKILLS_DIR = self._orig_dir
+        shutil.rmtree(self.tmpdir)
+        self.store.close()
+        os.unlink(self.dbpath)
+
+    def test_create_then_improve_skill(self):
+        out = run_tool("create_skill",
+                       {"name": "Deploy Checklist", "description": "Deploy the app safely",
+                        "body": "1. Run tests\n2. Push"}, self.ctx)
+        self.assertIn("v1, active", out)
+        self.assertIn("Run tests", skills.load("deploy_checklist"))  # name sanitized
+
+        out = run_tool("create_skill",
+                       {"name": "deploy_checklist", "description": "x", "body": "y"}, self.ctx)
+        self.assertIn("ERROR", out)  # duplicates rejected → improve_skill instead
+
+        out = run_tool("improve_skill",
+                       {"name": "deploy_checklist",
+                        "body": "1. Run tests\n2. Check staging env vars\n3. Push",
+                        "changelog": "staging env vars differ from prod"}, self.ctx)
+        self.assertIn("v2", out)
+        self.assertIn("staging env vars", skills.load("deploy_checklist"))
+        # old version archived, auditable
+        history = list((__import__("pathlib").Path(self.tmpdir) / "history").glob("*.md"))
+        self.assertEqual(len(history), 1)
+        self.assertIn("v1", history[0].name)
+        # revision recorded in the episodic log
+        self.assertTrue(self.store.search_events("skill_revision changelog", limit=5))
+
+    def test_draft_approve_flow(self):
+        skills.save("mined_skill", "A proposed skill", "1. step", status="draft")
+        self.assertEqual(skills.load("mined_skill"), "")          # drafts invisible to model
+        self.assertNotIn("mined_skill", dict(skills.index()))
+        self.assertTrue(skills.approve("mined_skill"))
+        self.assertEqual(skills.load("mined_skill"), "1. step")   # now active
+        self.assertFalse(skills.approve("mined_skill"))           # already active
+
+    def test_drop(self):
+        skills.save("temp_skill", "d", "b")
+        self.assertTrue(skills.drop("temp_skill"))
+        self.assertIsNone(skills.get("temp_skill"))
+
+
 class ParseJsonTests(unittest.TestCase):
     """parse_json handles the messy outputs of OpenAI-compatible providers."""
 

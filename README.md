@@ -80,7 +80,7 @@ Every tool call is appended to the episodic event log, so the consolidation
 engine can distill *lessons* from what worked and what failed — tool use feeds
 the memory, which improves future tool use.
 
-### Skills
+### Skills — and how the agent learns new ones
 
 Drop a markdown file into `skills/` and it's live — no restart logic, no code:
 
@@ -88,6 +88,8 @@ Drop a markdown file into `skills/` and it's live — no restart logic, no code:
 ---
 name: my_skill
 description: One line the model sees in every context.
+status: active
+version: 1
 ---
 Full instructions, loaded only when the agent calls use_skill("my_skill").
 ```
@@ -95,6 +97,27 @@ Full instructions, loaded only when the agent calls use_skill("my_skill").
 Only the name+description index sits in the prompt; the body loads on demand
 (progressive disclosure), so 50 skills cost barely more than 2. Ships with
 `weekly_review` and `research_brief` as examples — `/skills` lists them.
+
+But hand-written skills are just the floor. **The agent learns skills from
+experience** (S8 Skill Compiler, staged rollout per the design):
+
+1. **Taught in conversation → active immediately.** Tell it *"kalau aku minta
+   laporan mingguan, formatnya begini: ..."* and it calls `create_skill` —
+   the procedure is saved and you never have to explain it again.
+2. **Upgraded from experience → versioned.** When a skill's steps prove wrong
+   or you correct how a task should be done, the agent calls `improve_skill`:
+   the old version is archived to `skills/history/<name>.v<N>.md`, the version
+   bumps, and the changelog lands in the event log. Every revision is
+   auditable and reversible.
+3. **Mined from patterns → draft, needs your approval.** A background job
+   periodically scans the event log (messages *and* tool calls) for procedures
+   the agent has repeated or fumbled, and drafts a skill. Drafts are invisible
+   to the model until you run `/approve <name>` — the agent proposes, you
+   decide. The bar is deliberately high; most passes produce nothing.
+
+Skill lifecycle commands: `/skills` (list with version/draft badges),
+`/skill <name>` (inspect), `/approve <name>` (activate a draft). `/reflect`
+also runs a mining pass on demand.
 
 ## Quickstart
 
@@ -170,8 +193,8 @@ rest can be layered on without rewrites:
 | S7 Goal Tree | ✅ flat goals | `engram/store.py`, `/goal` commands + `manage_goal` tool |
 | S9 Insight Generator | ✅ minimal | `consolidator.reflect()` |
 | Tool layer + skill library | ✅ implemented | `engram/tools.py`, `engram/skills.py`, `skills/` |
-| S8 Skill Compiler (auto-mined skills) | 🔜 roadmap | manual skills work today; mining comes later |
-| S10 Learning Loop (outcomes) | 🔜 partial | tool calls are logged to the event log as raw material |
+| S8 Skill Compiler | ✅ staged rollout | `engram/skill_compiler.py` — create_skill/improve_skill tools + background mining with draft→approve gate |
+| S10 Learning Loop (outcomes) | 🔜 partial | tool calls + skill changelogs land in the event log; explicit outcome scoring comes later |
 
 Deliberate simplifications in this minimal version, and the upgrade path:
 

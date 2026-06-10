@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 
-from . import composer, config, consolidator, llm
+from . import composer, config, consolidator, llm, skill_compiler
 from .store import Store
 from .tools import ToolContext
 
@@ -76,6 +76,8 @@ class Agent:
             cycles += 1
             if cycles % 4 == 0:  # reflect roughly every 4th consolidation pass
                 self._safe_reflect()
+            if cycles % 6 == 0:  # mine for new skills less often — high bar
+                self._safe_mine()
 
     def _safe_consolidate(self):
         try:
@@ -92,3 +94,16 @@ class Agent:
                 log.info("generated %d insight(s)", len(insights))
         except Exception:
             log.exception("reflection failed")
+
+    def _safe_mine(self):
+        try:
+            for draft in skill_compiler.mine(self.store):
+                if self.notifier and draft["chat_id"]:
+                    self.notifier(
+                        draft["chat_id"],
+                        f"💡 Saya menyusun draft skill baru dari pengalaman kita: "
+                        f"*{draft['name']}* — {draft['description']}\n"
+                        f"Alasan: {draft['rationale']}\n"
+                        f"Lihat: /skill {draft['name']} · Aktifkan: /approve {draft['name']}")
+        except Exception:
+            log.exception("skill mining failed")

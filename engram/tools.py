@@ -114,6 +114,26 @@ def tool_specs() -> list:
               "Load the full instructions of one of your skills by name. The "
               "available skills are listed in your context.",
               {"name": {"type": "string"}}, ["name"]),
+        _spec("create_skill",
+              "Save a NEW reusable skill. Use when the user teaches you a "
+              "procedure ('kalau aku minta X, lakukan Y') or asks you to "
+              "remember how to do something. body = numbered markdown steps "
+              "referencing your tools by name. Active immediately.",
+              {"name": {"type": "string", "description": "snake_case"},
+               "description": {"type": "string", "description": "one line: when to use it"},
+               "body": {"type": "string"}},
+              ["name", "description", "body"]),
+        _spec("improve_skill",
+              "Upgrade an existing skill from experience: when a skill's steps "
+              "proved wrong/incomplete, or the user corrects how a task should "
+              "be done. Read the current body with use_skill first, then pass "
+              "the COMPLETE improved body. The old version is archived and the "
+              "version number bumped.",
+              {"name": {"type": "string"},
+               "body": {"type": "string", "description": "complete new body"},
+               "description": {"type": "string", "description": "updated one-liner (optional)"},
+               "changelog": {"type": "string", "description": "what changed and why"}},
+              ["name", "body", "changelog"]),
     ]
     if config.ENABLE_CODE_TOOL:
         specs.append(_spec(
@@ -290,6 +310,33 @@ def _use_skill(args, ctx):
     return body if body else f"ERROR: no skill named '{args['name']}'"
 
 
+def _create_skill(args, ctx):
+    name = skills.sanitize(args["name"])
+    if not name:
+        return "ERROR: invalid skill name"
+    if skills.get(name) is not None:
+        return f"ERROR: skill '{name}' already exists — use improve_skill to upgrade it"
+    skills.save(name, args["description"], args["body"])
+    ctx.store.log_event("system", "skill_created",
+                        json.dumps({"name": name}, ensure_ascii=False), ctx.chat_id)
+    return f"Skill '{name}' saved (v1, active). It will appear in your context from now on."
+
+
+def _improve_skill(args, ctx):
+    name = skills.sanitize(args["name"])
+    meta = skills.get(name)
+    if meta is None:
+        return f"ERROR: no skill named '{name}'"
+    new_version = skills.bump(name, args.get("description", ""), args["body"])
+    ctx.store.log_event(
+        "system", "skill_revision",
+        json.dumps({"name": name, "version": new_version,
+                    "changelog": args["changelog"]}, ensure_ascii=False),
+        ctx.chat_id)
+    return (f"Skill '{name}' upgraded to v{new_version} "
+            f"(v{meta['version']} archived in skills/history/).")
+
+
 def _run_python(args, ctx):
     proc = subprocess.run([sys.executable, "-c", args["code"]],
                           capture_output=True, text=True, timeout=10)
@@ -309,5 +356,7 @@ _HANDLERS = {
     "fetch_url": _fetch_url,
     "calculate": _calculate,
     "use_skill": _use_skill,
+    "create_skill": _create_skill,
+    "improve_skill": _improve_skill,
     "run_python": _run_python,
 }

@@ -18,7 +18,7 @@ import time
 
 import requests
 
-from . import config, consolidator, identity, skills
+from . import config, consolidator, identity, skill_compiler, skills
 from .agent import Agent
 
 log = logging.getLogger("engram.telegram")
@@ -43,8 +43,10 @@ Perintah:
 /goal <teks> — tambah goal
 /done <id> — tandai goal selesai
 /reminders — daftar pengingat terjadwal
-/skills — daftar skill yang tersedia
-/reflect — paksa konsolidasi memori + refleksi sekarang
+/skills — daftar skill (termasuk draft hasil belajar)
+/skill <nama> — lihat isi satu skill
+/approve <nama> — aktifkan draft skill yang saya usulkan
+/reflect — paksa konsolidasi memori + refleksi + penambangan skill
 /identity — lihat identitas inti saya
 /stats — statistik memori
 
@@ -180,6 +182,7 @@ class TelegramBot:
             try:
                 stats = consolidator.consolidate(self.store)
                 insights = consolidator.reflect(self.store, chat_id)
+                drafts = skill_compiler.mine(self.store)
             except Exception:
                 log.exception("manual reflect failed")
                 self.send(chat_id, "Konsolidasi gagal — cek log server.")
@@ -189,6 +192,10 @@ class TelegramBot:
             if insights:
                 out += "\n\nInsight baru:\n" + "\n".join(
                     f"• {i['value']}" for i in insights)
+            if drafts:
+                out += "\n\nDraft skill baru dari pengalaman kita:\n" + "\n".join(
+                    f"• {d['name']} — {d['description']}\n  ({d['rationale']})\n"
+                    f"  Aktifkan: /approve {d['name']}" for d in drafts)
             self.send(chat_id, out)
 
         elif cmd == "/reminders":
@@ -200,12 +207,35 @@ class TelegramBot:
             self.send(chat_id, "Pengingat terjadwal:\n" + "\n".join(lines))
 
         elif cmd == "/skills":
-            entries = skills.index()
-            if not entries:
-                self.send(chat_id, "Belum ada skill. Tambahkan file .md ke folder skills/.")
+            metas = skills.entries()
+            if not metas:
+                self.send(chat_id, "Belum ada skill. Tambahkan file .md ke folder skills/, "
+                                   "atau ajari saya prosedur lewat obrolan.")
                 return
-            lines = [f"• {name} — {desc}" for name, desc in entries]
-            self.send(chat_id, "Skill tersedia:\n" + "\n".join(lines))
+            lines = []
+            for m in metas:
+                badge = "📝 DRAFT" if m["status"] == "draft" else f"v{m['version']}"
+                lines.append(f"• {m['name']} [{badge}] — {m['description']}")
+            self.send(chat_id, "Skill:\n" + "\n".join(lines) +
+                      "\n\nDraft diaktifkan dengan /approve <nama>.")
+
+        elif cmd == "/skill":
+            meta = skills.get(skills.sanitize(arg)) if arg else None
+            if meta is None:
+                self.send(chat_id, "Pakai: /skill <nama>  (lihat daftar di /skills)")
+                return
+            self.send(chat_id,
+                      f"{meta['name']} [{meta['status']}, v{meta['version']}]\n"
+                      f"{meta['description']}\n\n{meta['body']}")
+
+        elif cmd == "/approve":
+            name = skills.sanitize(arg)
+            if not name or not skills.approve(name):
+                self.send(chat_id, "Pakai: /approve <nama draft>  (lihat /skills)")
+                return
+            self.store.log_event("user", "command_result",
+                                 f"skill '{name}' approved", chat_id)
+            self.send(chat_id, f"Skill '{name}' aktif. Saya akan memakainya mulai sekarang.")
 
         elif cmd == "/identity":
             self.send(chat_id, identity.load())
