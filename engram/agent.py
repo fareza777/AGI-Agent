@@ -8,6 +8,7 @@ import time
 
 from . import composer, config, consolidator, llm
 from .store import Store
+from .tools import ToolContext
 
 log = logging.getLogger("engram.agent")
 
@@ -17,6 +18,10 @@ class Agent:
         self.store = store or Store()
         self._stop = threading.Event()
         self._bg_thread = None
+        self._scheduler_thread = None
+        # Set by the interface (e.g. TelegramBot): callable(chat_id, text).
+        # Used by the scheduler to deliver due reminders.
+        self.notifier = None
 
     # ---------------- one chat turn ----------------
 
@@ -24,7 +29,7 @@ class Agent:
         self.store.log_event("user", "message", user_text, chat_id)
         system, messages = composer.build_context(self.store, chat_id, user_text)
         try:
-            reply = llm.chat(system, messages)
+            reply = llm.chat(system, messages, ctx=ToolContext(self.store, chat_id))
         except Exception:
             log.exception("chat model call failed")
             reply = "Maaf, saya gagal menghubungi model. Coba lagi sebentar lagi."
@@ -42,9 +47,26 @@ class Agent:
     def start_background(self):
         self._bg_thread = threading.Thread(target=self._loop, daemon=True)
         self._bg_thread.start()
+        self._scheduler_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
+        self._scheduler_thread.start()
 
     def stop(self):
         self._stop.set()
+
+    def _scheduler_loop(self):
+        """Deliver due reminders. Failures leave the reminder pending for retry."""
+        while not self._stop.wait(config.REMINDER_POLL_SEC):
+            if self.notifier is None:
+                continue
+            for r in self.store.due_reminders():
+                try:
+                    self.notifier(r["chat_id"], f"⏰ Pengingat: {r['message']}")
+                except Exception:
+                    log.exception("failed to deliver reminder #%s", r["id"])
+                    continue
+                self.store.set_reminder_status(r["id"], "sent")
+                self.store.log_event("agent", "message",
+                                     f"(reminder delivered) {r['message']}", r["chat_id"])
 
     def _loop(self):
         interval = config.CONSOLIDATE_INTERVAL_MIN * 60

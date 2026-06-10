@@ -55,3 +55,11 @@ ALLOWED_CHAT_IDS = {
 MAX_RETRIEVED_CLAIMS = 25
 MAX_RETRIEVED_EPISODES = 8
 CONVERSATION_TAIL = 16  # recent events included verbatim
+
+# Tool layer
+MAX_TOOL_ITERS = 8           # max tool-use round trips per turn
+SKILLS_DIR = PROJECT_ROOT / "skills"
+REMINDER_POLL_SEC = 30       # scheduler tick
+# The run_python tool executes model-written code on your machine. Off by
+# default; enable only if you trust everyone who can message the bot.
+ENABLE_CODE_TOOL = os.environ.get("ENGRAM_ENABLE_CODE_TOOL", "0") == "1"

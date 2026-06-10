@@ -10,9 +10,9 @@ Order of assembly (stable prefix first, for prompt caching):
   6. Conversation tail (recent messages, as proper user/assistant turns)
 """
 
-import json
+from datetime import datetime, timezone
 
-from . import config, identity
+from . import config, identity, skills
 from .store import Store
 
 _INSTRUCTIONS = """\
@@ -24,7 +24,19 @@ more trustworthy. "lesson" items are things you learned from past mistakes —
 follow them. "insight" items are patterns you inferred — treat as hypotheses.
 If memory contradicts the user, the user's current statement wins (your
 consolidation engine will record the change). Never invent memories that are
-not shown here."""
+not shown here.
+
+## How to use your tools
+
+- recall: if the user references something not in MEMORY, search before saying
+  you don't remember.
+- remember: when the user states something clearly important (job change, new
+  commitment, correction of your belief), store it immediately.
+- web_search / fetch_url: use for anything recent or outside your knowledge —
+  don't guess.
+- schedule_reminder: when the user asks to be reminded, schedule it (compute
+  the UTC time from the current time below) and confirm the exact time back.
+- use_skill: load a skill when the task matches its description."""
 
 
 def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
@@ -57,6 +69,16 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
         for g in goals:
             lines.append(f"- #{g['id']} {g['title']} (since {g['created_at'][:10]})")
         parts.append("\n".join(lines))
+
+    skill_index = skills.index()
+    if skill_index:
+        lines = ["## AVAILABLE SKILLS (load with the use_skill tool)"]
+        for name, description in skill_index:
+            lines.append(f"- {name}: {description}")
+        parts.append("\n".join(lines))
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC (%A)")
+    parts.append(f"Current time: {now}")
 
     system = "\n\n".join(parts)
     messages = _conversation_tail(store, chat_id)

@@ -11,8 +11,9 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engram.store import Store  # noqa: E402
-from engram import composer, identity  # noqa: E402
+from engram import composer, identity, skills  # noqa: E402
 from engram.llm import parse_json  # noqa: E402
+from engram.tools import ToolContext, run_tool  # noqa: E402
 
 
 class StoreTests(unittest.TestCase):
@@ -76,6 +77,77 @@ class StoreTests(unittest.TestCase):
     def test_meta_roundtrip(self):
         self.store.set_meta("tg_offset", "42")
         self.assertEqual(self.store.get_meta("tg_offset"), "42")
+
+
+class ToolTests(unittest.TestCase):
+    """Offline tools, exercised through the real dispatcher."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+        self.ctx = ToolContext(self.store, "c1")
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.path)
+
+    def test_remember_recall_and_supersession(self):
+        out = run_tool("remember", {"subject": "user", "predicate": "works_at",
+                                    "value": "Acme", "kind": "fact",
+                                    "confidence": 0.9}, self.ctx)
+        self.assertIn("new belief", out)
+        out = run_tool("remember", {"subject": "user", "predicate": "works_at",
+                                    "value": "Globex", "kind": "fact",
+                                    "confidence": 0.95}, self.ctx)
+        self.assertIn("Superseded", out)
+        self.assertIn("Acme", out)
+        out = run_tool("recall", {"query": "works_at Globex"}, self.ctx)
+        self.assertIn("Globex", out)
+        out = run_tool("belief_history", {"subject": "user", "predicate": "works_at"}, self.ctx)
+        self.assertIn("ACTIVE", out)
+        self.assertIn("superseded", out)
+
+    def test_goal_tool(self):
+        self.assertIn("#", run_tool("manage_goal", {"action": "add", "title": "Ship it"}, self.ctx))
+        self.assertIn("Ship it", run_tool("manage_goal", {"action": "list"}, self.ctx))
+        self.assertIn("done", run_tool("manage_goal", {"action": "done", "goal_id": 1}, self.ctx))
+
+    def test_reminder_tool(self):
+        out = run_tool("schedule_reminder",
+                       {"due_at": "2099-01-01T09:00:00Z", "message": "hi"}, self.ctx)
+        self.assertIn("scheduled", out)
+        self.assertIn("hi", run_tool("list_reminders", {}, self.ctx))
+        out = run_tool("schedule_reminder",
+                       {"due_at": "2001-01-01T09:00:00Z", "message": "past"}, self.ctx)
+        self.assertIn("ERROR", out)
+
+    def test_calculate(self):
+        self.assertEqual(run_tool("calculate", {"expression": "2 + 3 * 4"}, self.ctx), "14")
+        self.assertEqual(run_tool("calculate", {"expression": "2 ** 10"}, self.ctx), "1024")
+        out = run_tool("calculate", {"expression": "__import__('os')"}, self.ctx)
+        self.assertIn("ERROR", out)
+
+    def test_unknown_tool_and_event_logging(self):
+        self.assertIn("ERROR", run_tool("nonexistent", {}, self.ctx))
+        run_tool("calculate", {"expression": "1+1"}, self.ctx)
+        hits = self.store.search_events("calculate", limit=5)
+        self.assertTrue(hits)  # tool calls land in the episodic log
+
+    def test_use_skill(self):
+        out = run_tool("use_skill", {"name": "weekly_review"}, self.ctx)
+        self.assertIn("manage_goal", out)
+        self.assertIn("ERROR", run_tool("use_skill", {"name": "nope"}, self.ctx))
+
+
+class SkillsTests(unittest.TestCase):
+    def test_index_and_load(self):
+        entries = dict(skills.index())
+        self.assertIn("weekly_review", entries)
+        self.assertIn("research_brief", entries)
+        self.assertTrue(entries["weekly_review"])          # has a description
+        self.assertIn("web_search", skills.load("research_brief"))
+        self.assertEqual(skills.load("missing"), "")
 
 
 class ParseJsonTests(unittest.TestCase):

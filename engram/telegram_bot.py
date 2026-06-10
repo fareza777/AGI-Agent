@@ -18,7 +18,7 @@ import time
 
 import requests
 
-from . import config, consolidator, identity
+from . import config, consolidator, identity, skills
 from .agent import Agent
 
 log = logging.getLogger("engram.telegram")
@@ -32,12 +32,18 @@ Halo! Saya Engram — agen AI dengan memori permanen.
 Saya mengingat semua percakapan kita, menyuling fakta & preferensi ke memori \
 jangka panjang, mendeteksi saat informasi berubah, dan menyimpan goals lintas sesi.
 
+Saya juga punya tools: cari web, buka URL, kalkulator, pengingat terjadwal, \
+skills, dan akses langsung ke memori saya sendiri — cukup minta dalam obrolan \
+("ingatkan aku besok jam 9", "cari berita tentang X", dll).
+
 Perintah:
 /memory <kata kunci> — cari apa yang saya ingat
 /history <subjek> <atribut> — riwayat satu keyakinan (lihat perubahan)
 /goals — daftar goal aktif
 /goal <teks> — tambah goal
 /done <id> — tandai goal selesai
+/reminders — daftar pengingat terjadwal
+/skills — daftar skill yang tersedia
 /reflect — paksa konsolidasi memori + refleksi sekarang
 /identity — lihat identitas inti saya
 /stats — statistik memori
@@ -184,6 +190,22 @@ class TelegramBot:
                 out += "\n\nInsight baru:\n" + "\n".join(
                     f"• {i['value']}" for i in insights)
             self.send(chat_id, out)
+
+        elif cmd == "/reminders":
+            rows = self.store.pending_reminders(chat_id)
+            if not rows:
+                self.send(chat_id, "Tidak ada pengingat terjadwal.")
+                return
+            lines = [f"#{r['id']} {r['due_ts']} UTC — {r['message']}" for r in rows]
+            self.send(chat_id, "Pengingat terjadwal:\n" + "\n".join(lines))
+
+        elif cmd == "/skills":
+            entries = skills.index()
+            if not entries:
+                self.send(chat_id, "Belum ada skill. Tambahkan file .md ke folder skills/.")
+                return
+            lines = [f"• {name} — {desc}" for name, desc in entries]
+            self.send(chat_id, "Skill tersedia:\n" + "\n".join(lines))
 
         elif cmd == "/identity":
             self.send(chat_id, identity.load())

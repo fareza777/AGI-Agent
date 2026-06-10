@@ -67,6 +67,15 @@ CREATE TABLE IF NOT EXISTS goals (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS reminders (
+    id         INTEGER PRIMARY KEY,
+    chat_id    TEXT NOT NULL,
+    due_ts     TEXT NOT NULL,                    -- ISO 8601 UTC
+    message    TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'pending',  -- pending | sent | cancelled
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -249,6 +258,39 @@ class Store:
                 "SELECT * FROM goals WHERE chat_id=? AND status=? ORDER BY id ASC",
                 (chat_id, status),
             ).fetchall()
+
+    # ---------------- reminders (scheduled messages) ----------------
+
+    def add_reminder(self, chat_id: str, due_ts: str, message: str) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO reminders (chat_id, due_ts, message, created_at) VALUES (?,?,?,?)",
+                (chat_id, due_ts, message, now_iso()),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def due_reminders(self) -> list:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM reminders WHERE status='pending' AND due_ts<=? ORDER BY due_ts",
+                (now_iso(),),
+            ).fetchall()
+
+    def pending_reminders(self, chat_id: str) -> list:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM reminders WHERE chat_id=? AND status='pending' ORDER BY due_ts",
+                (chat_id,),
+            ).fetchall()
+
+    def set_reminder_status(self, reminder_id: int, status: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE reminders SET status=? WHERE id=?", (status, reminder_id)
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
 
     # ---------------- meta (e.g. Telegram update offset) ----------------
 

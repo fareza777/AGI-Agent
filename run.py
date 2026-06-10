@@ -46,8 +46,9 @@ def main() -> int:
         return 1
 
     agent = Agent()
-    agent.start_background()
     bot = TelegramBot(agent)
+    agent.notifier = bot.send       # lets the scheduler deliver reminders
+    agent.start_background()
     try:
         bot.run()
     except KeyboardInterrupt:

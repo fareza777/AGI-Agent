@@ -46,6 +46,55 @@ You (Telegram) ──▶ Working-Memory Composer ──▶ Claude (Opus 4.8) ─
 - **Costs stay flat as memory grows.** Each turn retrieves a *budgeted* slice
   of memory (BM25 over claims + episodes, ranked, capped) instead of stuffing
   the whole history into the prompt.
+- **Acts, not just talks.** A full tool layer: web search, page fetching, exact
+  math, scheduled reminders, a skills library — plus *memory-native* tools no
+  flat-file agent can have (see below).
+
+## Tools
+
+The agent decides when to use these mid-conversation ("ingatkan aku besok jam
+9", "cari berita tentang X", "riset topik Y") — no commands needed.
+
+**Memory-native tools** — these operate on the structured claim store, which is
+why a Hermes/OpenClaw-style agent (flat text memory) can't replicate them:
+
+| Tool | What it does |
+|---|---|
+| `recall` | Re-enters the retrieval pipeline mid-reasoning — iterative memory search, not one-shot |
+| `remember` | Writes a belief into its slot *immediately*, with automatic supersession of the old value |
+| `belief_history` | Reads the full timeline of one belief — "what did I believe and when" |
+| `manage_goal` | Add/complete/list goals in the persistent goal tree |
+| `schedule_reminder` / `list_reminders` | Future-dated messages, delivered by a background scheduler even days later |
+
+**World-facing tools** — parity with Hermes-style agents:
+
+| Tool | What it does |
+|---|---|
+| `web_search` | DuckDuckGo search, no API key needed |
+| `fetch_url` | Fetch a page, return readable text |
+| `calculate` | Exact arithmetic via a safe AST evaluator (no `eval`) |
+| `use_skill` | Load a markdown skill from `skills/` on demand |
+| `run_python` | Run model-written code in a subprocess — **off by default** (`ENGRAM_ENABLE_CODE_TOOL=1`) |
+
+Every tool call is appended to the episodic event log, so the consolidation
+engine can distill *lessons* from what worked and what failed — tool use feeds
+the memory, which improves future tool use.
+
+### Skills
+
+Drop a markdown file into `skills/` and it's live — no restart logic, no code:
+
+```markdown
+---
+name: my_skill
+description: One line the model sees in every context.
+---
+Full instructions, loaded only when the agent calls use_skill("my_skill").
+```
+
+Only the name+description index sits in the prompt; the body loads on demand
+(progressive disclosure), so 50 skills cost barely more than 2. Ships with
+`weekly_review` and `research_brief` as examples — `/skills` lists them.
 
 ## Quickstart
 
@@ -81,6 +130,8 @@ Then come back tomorrow, next week, next year, and ask. Commands:
 | `/memory <query>` | Search what the agent believes, with confidence + dates |
 | `/history <subject> <attribute>` | Timeline of one belief slot — see supersession in action |
 | `/goals` / `/goal <text>` / `/done <id>` | Long-term goal tree |
+| `/reminders` | Pending scheduled reminders |
+| `/skills` | List available skills |
 | `/reflect` | Force a consolidation + insight pass right now |
 | `/identity` | Show the version-controlled Identity Core |
 | `/stats` | Active beliefs, pending events, models in use |
@@ -116,10 +167,11 @@ rest can be layered on without rewrites:
 | S4 Contradiction Detector | ✅ slot-based supersession | `Store.add_claim()` |
 | S5 Identity Core | ✅ implemented | `identity/CORE.md` + `engram/identity.py` |
 | S6 Working-Memory Composer | ✅ implemented (BM25) | `engram/composer.py` |
-| S7 Goal Tree | ✅ flat goals | `engram/store.py`, `/goal` commands |
+| S7 Goal Tree | ✅ flat goals | `engram/store.py`, `/goal` commands + `manage_goal` tool |
 | S9 Insight Generator | ✅ minimal | `consolidator.reflect()` |
-| S8 Skill Compiler | 🔜 roadmap | — |
-| S10 Learning Loop (outcomes) | 🔜 roadmap | — |
+| Tool layer + skill library | ✅ implemented | `engram/tools.py`, `engram/skills.py`, `skills/` |
+| S8 Skill Compiler (auto-mined skills) | 🔜 roadmap | manual skills work today; mining comes later |
+| S10 Learning Loop (outcomes) | 🔜 partial | tool calls are logged to the event log as raw material |
 
 Deliberate simplifications in this minimal version, and the upgrade path:
 
@@ -178,6 +230,7 @@ Everything via environment variables (see [.env.example](.env.example)):
 | `ENGRAM_OPENAI_BASE_URL` | per provider | OpenAI-compatible base URL |
 | `ENGRAM_CHAT_MODEL` | `claude-opus-4-8` (anthropic only) | model for replies |
 | `ENGRAM_CONSOLIDATE_MODEL` | same as chat model | model for background jobs — a cheaper model cuts costs |
+| `ENGRAM_ENABLE_CODE_TOOL` | `0` | set `1` to enable the `run_python` tool (runs model-written code on your machine — only enable if you trust everyone who can message the bot) |
 | `ENGRAM_DB_PATH` | `./engram.db` | where the mind lives — **back this file up** |
 | `ENGRAM_CONSOLIDATE_INTERVAL_MIN` | `30` | sleep-cycle period |
 | `ENGRAM_ALLOWED_CHAT_IDS` | open | comma-separated chat ID allowlist |
@@ -188,12 +241,15 @@ Everything via environment variables (see [.env.example](.env.example)):
 DESIGN.md               the full architecture (read this first)
 identity/CORE.md        S5 — the agent's version-controlled self
 run.py                  entry point
+skills/                 markdown skill library (drop a .md file in, it's live)
 engram/
-  store.py              S1 + S2 + S7 — SQLite substrate, FTS5 retrieval
+  store.py              S1 + S2 + S7 — SQLite substrate, FTS5 retrieval, reminders
   consolidator.py       S3 + S4 + S9 — sleep cycle, supersession, insights
   composer.py           S6 — budgeted context assembly
-  agent.py              orchestrator + background thread
-  llm.py                Claude API wrapper (chat + structured extraction)
+  tools.py              tool layer: memory-native + web/calc/skills/reminders
+  skills.py             skill index/loader (progressive disclosure)
+  agent.py              orchestrator + sleep-cycle + reminder scheduler threads
+  llm.py                provider layer: Anthropic SDK or OpenAI-compatible, with tool loop
   telegram_bot.py       the Telegram interface
-tests/test_substrate.py offline tests for the whole memory layer
+tests/test_substrate.py offline tests for memory, tools, and skills
 ```
