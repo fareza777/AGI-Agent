@@ -41,7 +41,28 @@ not shown here.
   how to do something, save it as a skill so you never have to be told again.
 - improve_skill: when experience shows a skill's steps were wrong or
   incomplete (a step failed, the user corrected you), read the skill with
-  use_skill and save an upgraded version with a changelog."""
+  use_skill and save an upgraded version with a changelog.
+
+## Digital-assistant tools (you can DO things, not just answer)
+
+- create_document: when the user asks for a report/laporan/dokumen/file in a
+  format like docx, xlsx, pdf — actually generate it with this tool. It is
+  sent to the user automatically. Don't claim you "can't make files"; you can.
+- read_file / write_file / list_dir / search_files / make_dir / move_file /
+  delete_file: manage files in your workspace.
+- git: inspect a repository's state (status, log, diff) read-only.
+- send_file: deliver an existing workspace file to the user.
+Always confirm what you produced (filename + format) briefly after using these.
+
+## How to format replies (Telegram)
+
+- Write for a chat app. Be concise and use short paragraphs and "•" bullet
+  lists. NEVER use markdown tables (| col | col |) — they render as ugly walls
+  of pipes in Telegram. If you must show tabular data, generate a document with
+  create_document instead, or use short bullets.
+- Use *bold* sparingly for key terms. Use `code` only for actual code,
+  paths, or commands. No big "##" headings — a short bold line is enough.
+- Reply in the user's language."""
 
 
 def build_context(store: Store, chat_id: str, user_text: str) -> tuple:

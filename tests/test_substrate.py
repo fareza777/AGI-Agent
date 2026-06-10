@@ -11,8 +11,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engram.store import Store  # noqa: E402
-from engram import composer, identity, skills  # noqa: E402
-from engram.llm import parse_json  # noqa: E402
+from engram import config, composer, identity, skills, desktop, telegram_format  # noqa: E402
+from engram.llm import parse_json, strip_reasoning  # noqa: E402
 from engram.tools import ToolContext, run_tool  # noqa: E402
 
 
@@ -222,6 +222,134 @@ class ParseJsonTests(unittest.TestCase):
     def test_json_with_prose(self):
         text = 'Here is the result:\n{"claims": [{"x": 1}]}\nHope that helps!'
         self.assertEqual(parse_json(text), {"claims": [{"x": 1}]})
+
+
+class StripReasoningTests(unittest.TestCase):
+    def test_complete_block_removed(self):
+        self.assertEqual(strip_reasoning("<think>plotting</think>Halo!"), "Halo!")
+
+    def test_unmatched_close_keeps_tail(self):
+        self.assertEqual(strip_reasoning("reasoning text</think>Jawaban."), "Jawaban.")
+
+    def test_unclosed_open_is_empty(self):
+        self.assertEqual(strip_reasoning("<think>ran out of tokens..."), "")
+
+    def test_plain_text_untouched(self):
+        self.assertEqual(strip_reasoning("just a normal reply"), "just a normal reply")
+
+
+class TelegramFormatTests(unittest.TestCase):
+    def test_table_flattened_to_bullets(self):
+        md = ("| Tool | Fungsi |\n| --- | --- |\n"
+              "| web_search | cari di web |\n| fetch_url | buka URL |")
+        out = telegram_format.to_telegram_html(md)
+        self.assertNotIn("|", out)
+        self.assertIn("• Tool: web_search — Fungsi: cari di web", out)
+
+    def test_heading_to_bold(self):
+        self.assertEqual(telegram_format.to_telegram_html("## Hasil"), "<b>Hasil</b>")
+
+    def test_bold_and_bullets(self):
+        out = telegram_format.to_telegram_html("- **penting** ya\n- biasa")
+        self.assertIn("• <b>penting</b> ya", out)
+        self.assertIn("• biasa", out)
+
+    def test_html_escaped(self):
+        out = telegram_format.to_telegram_html("nilai a < b & c > d")
+        self.assertIn("&lt;", out)
+        self.assertIn("&amp;", out)
+
+    def test_code_block_preserved(self):
+        out = telegram_format.to_telegram_html("teks\n```\nx = 1 < 2\n```")
+        self.assertIn("<pre>", out)
+        self.assertIn("x = 1 &lt; 2", out)
+
+    def test_think_stripped(self):
+        out = telegram_format.to_telegram_html("<think>secret</think>Halo")
+        self.assertEqual(out, "Halo")
+
+
+class DesktopTests(unittest.TestCase):
+    def setUp(self):
+        import shutil
+        self._shutil = shutil
+        self.tmp = tempfile.mkdtemp()
+        self._orig_ws = config.WORKSPACE_DIR
+        self._orig_dirs = config.ALLOWED_DIRS
+        config.WORKSPACE_DIR = __import__("pathlib").Path(self.tmp).resolve()
+        config.ALLOWED_DIRS = [config.WORKSPACE_DIR]
+
+    def tearDown(self):
+        config.WORKSPACE_DIR = self._orig_ws
+        config.ALLOWED_DIRS = self._orig_dirs
+        self._shutil.rmtree(self.tmp)
+
+    def test_write_read_list(self):
+        desktop.write_file("notes/a.txt", "hello world")
+        self.assertIn("hello world", desktop.read_file("notes/a.txt"))
+        self.assertIn("a.txt", desktop.list_dir("notes"))
+
+    def test_path_traversal_blocked(self):
+        with self.assertRaises(desktop.WorkspaceError):
+            desktop.write_file("../escape.txt", "nope")
+        with self.assertRaises(desktop.WorkspaceError):
+            desktop.read_file("/etc/passwd")
+
+    def test_search_files(self):
+        desktop.write_file("x.txt", "the quick brown fox")
+        desktop.write_file("y.txt", "nothing here")
+        out = desktop.search_files("brown")
+        self.assertIn("x.txt", out)
+        self.assertNotIn("y.txt", out)
+
+    def test_create_document_md_and_csv(self):
+        p = desktop.create_document("rep", "md", "Laporan",
+                                    [{"heading": "Ringkasan", "body": "isi"}])
+        self.assertTrue(p.exists())
+        self.assertIn("# Laporan", p.read_text())
+        c = desktop.create_document("data", "csv", "Data", [],
+                                    {"headers": ["a", "b"], "rows": [[1, 2], [3, 4]]})
+        self.assertIn("a,b", c.read_text())
+
+    def test_create_document_docx_if_available(self):
+        try:
+            import docx  # noqa: F401
+        except ImportError:
+            self.skipTest("python-docx not installed")
+        p = desktop.create_document("r", "docx", "Judul",
+                                    [{"heading": "H", "body": "B"}])
+        self.assertTrue(p.exists() and p.stat().st_size > 0)
+
+
+class DocumentToolDeliveryTests(unittest.TestCase):
+    """create_document must queue the file for delivery on the ToolContext."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_ws = config.WORKSPACE_DIR
+        self._orig_dirs = config.ALLOWED_DIRS
+        config.WORKSPACE_DIR = __import__("pathlib").Path(self.tmp).resolve()
+        config.ALLOWED_DIRS = [config.WORKSPACE_DIR]
+        fd, self.db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.db)
+
+    def tearDown(self):
+        import shutil
+        config.WORKSPACE_DIR = self._orig_ws
+        config.ALLOWED_DIRS = self._orig_dirs
+        shutil.rmtree(self.tmp)
+        self.store.close()
+        os.unlink(self.db)
+
+    def test_create_document_queues_file(self):
+        ctx = ToolContext(self.store, "c1")
+        out = run_tool("create_document",
+                       {"filename": "laporan", "format": "md", "title": "T",
+                        "sections": [{"heading": "H", "body": "B"}]}, ctx)
+        self.assertIn("sent to the user", out)
+        self.assertEqual(len(ctx.produced_files), 1)
+        self.assertTrue(ctx.produced_files[0].endswith("laporan.md"))
 
 
 if __name__ == "__main__":

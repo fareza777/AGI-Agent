@@ -14,27 +14,54 @@ Anything else is a normal conversation turn.
 """
 
 import logging
+import os
 import time
 
 import requests
 
-from . import config, consolidator, identity, skill_compiler, skills
+from . import config, consolidator, identity, skill_compiler, skills, telegram_format
 from .agent import Agent
 
 log = logging.getLogger("engram.telegram")
 
 API = "https://api.telegram.org/bot{token}/{method}"
-MAX_MSG = 4096
+MAX_MSG = 3800   # leave headroom under Telegram's 4096 for HTML entities
+
+
+def _split(text: str, limit: int):
+    """Split a message at line boundaries so HTML tags aren't cut mid-tag."""
+    text = text or ""
+    if len(text) <= limit:
+        yield text
+        return
+    buf = ""
+    for line in text.split("\n"):
+        if len(buf) + len(line) + 1 > limit:
+            if buf:
+                yield buf
+                buf = ""
+            while len(line) > limit:        # a single very long line
+                yield line[:limit]
+                line = line[limit:]
+        buf = f"{buf}\n{line}" if buf else line
+    if buf:
+        yield buf
 
 HELP = """\
-Halo! Saya Engram — agen AI dengan memori permanen.
+Halo! Saya Engram — asisten digital dengan memori permanen.
 
 Saya mengingat semua percakapan kita, menyuling fakta & preferensi ke memori \
 jangka panjang, mendeteksi saat informasi berubah, dan menyimpan goals lintas sesi.
 
-Saya juga punya tools: cari web, buka URL, kalkulator, pengingat terjadwal, \
-skills, dan akses langsung ke memori saya sendiri — cukup minta dalam obrolan \
-("ingatkan aku besok jam 9", "cari berita tentang X", dll).
+Saya juga bisa bertindak, bukan cuma menjawab:
+• Bikin dokumen — laporan docx, spreadsheet xlsx, pdf, dll ("buatkan laporan ...")
+• Kelola file di workspace — tulis, baca, cari, rapikan
+• Cek repository git (status, log, diff)
+• Cari web, buka URL, kalkulator, pengingat terjadwal
+• Akses langsung ke memori saya sendiri
+
+Cukup minta dalam obrolan ("buatkan laporan penjualan dalam docx", \
+"ingatkan aku besok jam 9", "cek status repo di /path/repo").
 
 Perintah:
 /memory <kata kunci> — cari apa yang saya ingat
@@ -72,9 +99,32 @@ class TelegramBot:
             raise RuntimeError(f"Telegram {method} failed: {data}")
         return data["result"]
 
-    def send(self, chat_id, text: str):
-        for i in range(0, max(len(text), 1), MAX_MSG):
-            self._call("sendMessage", chat_id=chat_id, text=text[i:i + MAX_MSG])
+    def send(self, chat_id, text: str, rich: bool = True):
+        """Send a message. rich=True renders model markdown as Telegram HTML
+        (clean bullets, bold, code, flattened tables); falls back to plain text
+        if Telegram rejects the entities."""
+        body = telegram_format.to_telegram_html(text) if rich else text
+        for chunk in _split(body, MAX_MSG):
+            try:
+                self._call("sendMessage", chat_id=chat_id, text=chunk,
+                           parse_mode="HTML", disable_web_page_preview=True)
+            except RuntimeError:
+                # Malformed entity (rare) — resend as plain text so the user
+                # always gets the message.
+                plain = next(iter(_split(text, MAX_MSG)), text[:MAX_MSG])
+                self._call("sendMessage", chat_id=chat_id, text=plain)
+                break
+
+    def send_document(self, chat_id, path: str):
+        if not os.path.isfile(path):
+            return
+        url = API.format(token=self.token, method="sendDocument")
+        with open(path, "rb") as fh:
+            resp = self.session.post(
+                url, data={"chat_id": chat_id},
+                files={"document": (os.path.basename(path), fh)}, timeout=120)
+        if not resp.json().get("ok"):
+            log.warning("sendDocument failed for %s: %s", path, resp.text[:200])
 
     # ---------------- main loop ----------------
 
@@ -113,7 +163,11 @@ class TelegramBot:
             self._handle_command(chat_id, text)
         else:
             self._call("sendChatAction", chat_id=chat_id, action="typing")
-            self.send(chat_id, self.agent.handle_message(chat_id, text))
+            reply, files = self.agent.handle_message(chat_id, text)
+            self.send(chat_id, reply)
+            for path in files:
+                self._call("sendChatAction", chat_id=chat_id, action="upload_document")
+                self.send_document(chat_id, path)
 
     # ---------------- commands ----------------
 

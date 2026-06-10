@@ -46,14 +46,15 @@ You (Telegram) ──▶ Working-Memory Composer ──▶ Claude (Opus 4.8) ─
 - **Costs stay flat as memory grows.** Each turn retrieves a *budgeted* slice
   of memory (BM25 over claims + episodes, ranked, capped) instead of stuffing
   the whole history into the prompt.
-- **Acts, not just talks.** A full tool layer: web search, page fetching, exact
-  math, scheduled reminders, a skills library — plus *memory-native* tools no
-  flat-file agent can have (see below).
+- **A real digital assistant, not just a chatbot.** Generates documents
+  (docx/xlsx/pdf), manages files, inspects git repos — and delivers produced
+  files straight to your Telegram chat.
 
 ## Tools
 
-The agent decides when to use these mid-conversation ("ingatkan aku besok jam
-9", "cari berita tentang X", "riset topik Y") — no commands needed.
+The agent decides when to use these mid-conversation ("buatkan laporan
+penjualan dalam docx", "ingatkan aku besok jam 9", "cek status repo di
+/path/repo") — no commands needed.
 
 **Memory-native tools** — these operate on the structured claim store, which is
 why a Hermes/OpenClaw-style agent (flat text memory) can't replicate them:
@@ -66,6 +67,16 @@ why a Hermes/OpenClaw-style agent (flat text memory) can't replicate them:
 | `manage_goal` | Add/complete/list goals in the persistent goal tree |
 | `schedule_reminder` / `list_reminders` | Future-dated messages, delivered by a background scheduler even days later |
 
+**Digital-assistant tools** — turn it into a do-things assistant:
+
+| Tool | What it does |
+|---|---|
+| `create_document` | Generate a real **docx / xlsx / pdf / md / html / csv** and send it to you over Telegram |
+| `read_file` / `write_file` / `list_dir` / `search_files` / `make_dir` / `move_file` / `delete_file` | Manage files in a sandboxed workspace |
+| `git` | Read-only repo inspection (status, log, diff, branch, …) |
+| `send_file` | Deliver any existing workspace file to your chat |
+| `run_shell` | Shell commands in the workspace — **off by default** (`ENGRAM_ENABLE_SHELL_TOOL=1`) |
+
 **World-facing tools** — parity with Hermes-style agents:
 
 | Tool | What it does |
@@ -75,6 +86,17 @@ why a Hermes/OpenClaw-style agent (flat text memory) can't replicate them:
 | `calculate` | Exact arithmetic via a safe AST evaluator (no `eval`) |
 | `use_skill` | Load a markdown skill from `skills/` on demand |
 | `run_python` | Run model-written code in a subprocess — **off by default** (`ENGRAM_ENABLE_CODE_TOOL=1`) |
+
+**Safety:** all file/document tools are sandboxed to the workspace (plus any
+roots you opt into via `ENGRAM_ALLOWED_DIRS`); path traversal is blocked. `git`
+is read-only. Code/shell execution is opt-in. Document output degrades
+gracefully — without `python-docx`/`openpyxl`/`reportlab` installed you still
+get md/html/txt/csv and a clear "pip install" hint for the rest.
+
+**Clean Telegram output:** model replies are rendered to Telegram's HTML
+(tidy bullets, bold, code), markdown tables are flattened to readable lines
+instead of walls of `|`, and any leaked `<think>` reasoning from
+reasoning-models is stripped before it reaches you.
 
 Every tool call is appended to the episodic event log, so the consolidation
 engine can distill *lessons* from what worked and what failed — tool use feeds
@@ -95,8 +117,10 @@ Full instructions, loaded only when the agent calls use_skill("my_skill").
 ```
 
 Only the name+description index sits in the prompt; the body loads on demand
-(progressive disclosure), so 50 skills cost barely more than 2. Ships with
-`weekly_review` and `research_brief` as examples — `/skills` lists them.
+(progressive disclosure), so 50 skills cost barely more than 2. Ships with a
+working set — `docx_report`, `spreadsheet`, `repo_review`, `file_organizer`,
+`daily_briefing`, `meeting_notes`, `research_brief`, `weekly_review` — that
+orchestrate the tools above. `/skills` lists them.
 
 But hand-written skills are just the floor. **The agent learns skills from
 experience** (S8 Skill Compiler, staged rollout per the design):
@@ -269,10 +293,13 @@ engram/
   store.py              S1 + S2 + S7 — SQLite substrate, FTS5 retrieval, reminders
   consolidator.py       S3 + S4 + S9 — sleep cycle, supersession, insights
   composer.py           S6 — budgeted context assembly
-  tools.py              tool layer: memory-native + web/calc/skills/reminders
+  tools.py              tool dispatcher: memory-native + digital-assistant + web
+  desktop.py            files, document generation (docx/xlsx/pdf), git, shell
   skills.py             skill index/loader (progressive disclosure)
+  skill_compiler.py     S8 — learn/upgrade skills from experience
   agent.py              orchestrator + sleep-cycle + reminder scheduler threads
   llm.py                provider layer: Anthropic SDK or OpenAI-compatible, with tool loop
-  telegram_bot.py       the Telegram interface
-tests/test_substrate.py offline tests for memory, tools, and skills
+  telegram_format.py    markdown → clean Telegram HTML, table flattening
+  telegram_bot.py       the Telegram interface (renders HTML, delivers files)
+tests/test_substrate.py offline tests for memory, tools, desktop, formatting
 ```

@@ -5,3 +5,5 @@ engram.db
 engram.db-*
 .venv/
 venv/
+workspace/
+skills/history/

@@ -25,11 +25,13 @@ class Agent:
 
     # ---------------- one chat turn ----------------
 
-    def handle_message(self, chat_id: str, user_text: str) -> str:
+    def handle_message(self, chat_id: str, user_text: str):
+        """Run one turn. Returns (reply_text, [produced_file_paths])."""
         self.store.log_event("user", "message", user_text, chat_id)
         system, messages = composer.build_context(self.store, chat_id, user_text)
+        ctx = ToolContext(self.store, chat_id)
         try:
-            reply = llm.chat(system, messages, ctx=ToolContext(self.store, chat_id))
+            reply = llm.chat(system, messages, ctx=ctx)
         except Exception:
             log.exception("chat model call failed")
             reply = "Maaf, saya gagal menghubungi model. Coba lagi sebentar lagi."
@@ -40,7 +42,7 @@ class Agent:
         if self.store.unprocessed_count() >= config.CONSOLIDATE_EVERY_N_EVENTS:
             threading.Thread(target=self._safe_consolidate, daemon=True).start()
 
-        return reply
+        return reply, ctx.produced_files
 
     # ---------------- background sleep cycle ----------------
 

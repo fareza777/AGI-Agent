@@ -10,15 +10,25 @@ is flat text):
   manage_goal     — add/complete/list goals in the persistent goal tree
   schedule_reminder / list_reminders — future-dated messages the scheduler delivers
 
+Digital-assistant (do things, not just answer — sandboxed to config.ALLOWED_DIRS):
+  list_dir / read_file / write_file / make_dir / move_file / delete_file /
+  search_files — workspace file management
+  create_document — generate docx/xlsx/pdf/md/html/csv and deliver it to the user
+  send_file       — deliver an existing workspace file
+  git             — read-only repository inspection
+  run_shell       — shell commands; OFF by default (ENGRAM_ENABLE_SHELL_TOOL=1)
+
 World-facing (parity with Hermes-style agents):
   web_search      — DuckDuckGo, no API key needed
   fetch_url       — fetch a page and return readable text
   calculate       — safe arithmetic evaluator
   use_skill       — load the full body of a markdown skill on demand
-  run_python      — sandboxed-ish subprocess; OFF by default (ENGRAM_ENABLE_CODE_TOOL=1)
+  create_skill / improve_skill — learn and upgrade skills from experience
+  run_python      — subprocess; OFF by default (ENGRAM_ENABLE_CODE_TOOL=1)
 
-Every tool execution is appended to the episodic event log, so the
-consolidation engine can later distill lessons from what worked and failed.
+Files a tool produces are queued on ToolContext.produced_files; the interface
+(TelegramBot) delivers them after the turn. Every tool execution is appended to
+the episodic event log, so the consolidation engine can later distill lessons.
 """
 
 import ast
@@ -34,7 +44,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from . import config, skills
+from . import config, desktop, skills
 from .store import Store
 
 log = logging.getLogger("engram.tools")
@@ -44,6 +54,13 @@ class ToolContext:
     def __init__(self, store: Store, chat_id: str):
         self.store = store
         self.chat_id = chat_id
+        # Files the agent produced this turn; the interface delivers them.
+        self.produced_files = []
+
+    def deliver_file(self, path):
+        p = str(path)
+        if p not in self.produced_files:
+            self.produced_files.append(p)
 
 
 # ---------------- tool specs (Anthropic schema; converted for OpenAI-compat) ----------------
@@ -134,6 +151,62 @@ def tool_specs() -> list:
                "description": {"type": "string", "description": "updated one-liner (optional)"},
                "changelog": {"type": "string", "description": "what changed and why"}},
               ["name", "body", "changelog"]),
+
+        # ---- digital-assistant: files ----
+        _spec("list_dir",
+              "List files and folders in your workspace (or an allowed directory).",
+              {"path": {"type": "string", "description": "default '.'"}}),
+        _spec("read_file",
+              "Read a UTF-8 text file from the workspace / allowed directories.",
+              {"path": {"type": "string"}}, ["path"]),
+        _spec("write_file",
+              "Write (create or overwrite) a text file in the workspace.",
+              {"path": {"type": "string"}, "content": {"type": "string"}},
+              ["path", "content"]),
+        _spec("make_dir", "Create a folder in the workspace.",
+              {"path": {"type": "string"}}, ["path"]),
+        _spec("move_file", "Move or rename a file within the workspace.",
+              {"src": {"type": "string"}, "dst": {"type": "string"}}, ["src", "dst"]),
+        _spec("delete_file", "Delete a file (or an empty folder) in the workspace.",
+              {"path": {"type": "string"}}, ["path"]),
+        _spec("search_files",
+              "Search filenames and text content under a workspace path.",
+              {"query": {"type": "string"}, "path": {"type": "string", "description": "default '.'"}},
+              ["query"]),
+
+        # ---- digital-assistant: document generation + delivery ----
+        _spec("create_document",
+              "Generate a real document and SEND it to the user. Use this for "
+              "'buatkan laporan', 'bikin docx/excel/pdf', etc. Formats: docx, "
+              "xlsx, pdf, md, html, txt, csv. Provide title and sections "
+              "([{heading, body}]); optionally a table {headers:[...], "
+              "rows:[[...]]}. csv/xlsx are best with a table.",
+              {"filename": {"type": "string", "description": "without extension is fine"},
+               "format": {"type": "string",
+                          "enum": ["docx", "xlsx", "pdf", "md", "html", "txt", "csv"]},
+               "title": {"type": "string"},
+               "sections": {"type": "array", "items": {
+                   "type": "object",
+                   "properties": {"heading": {"type": "string"},
+                                  "body": {"type": "string"}}}},
+               "table": {"type": "object", "properties": {
+                   "headers": {"type": "array", "items": {"type": "string"}},
+                   "rows": {"type": "array", "items": {
+                       "type": "array", "items": {"type": "string"}}}}}},
+              ["filename", "format", "title"]),
+        _spec("send_file",
+              "Send an existing workspace file to the user (e.g. one you wrote "
+              "with write_file, or generated earlier).",
+              {"path": {"type": "string"}}, ["path"]),
+
+        # ---- digital-assistant: repo inspection ----
+        _spec("git",
+              "Run a READ-ONLY git command on a repository in an allowed "
+              "directory (status, log, diff, branch, show, remote, ls-files, "
+              "shortlog). Use to check repo state.",
+              {"repo_path": {"type": "string"},
+               "command": {"type": "string", "description": "e.g. 'status' or 'log --oneline'"}},
+              ["repo_path", "command"]),
     ]
     if config.ENABLE_CODE_TOOL:
         specs.append(_spec(
@@ -141,6 +214,12 @@ def tool_specs() -> list:
             "Run a short Python script in a subprocess (10s timeout) and return "
             "its stdout/stderr. Use print() for output.",
             {"code": {"type": "string"}}, ["code"]))
+    if config.ENABLE_SHELL_TOOL:
+        specs.append(_spec(
+            "run_shell",
+            "Run a shell command in the workspace directory and return its "
+            "output. Use for git clone, builds, system tasks.",
+            {"command": {"type": "string"}}, ["command"]))
     return specs
 
 
@@ -153,9 +232,12 @@ def openai_tool_specs() -> list:
 
 # ---------------- dispatcher ----------------
 
+_GATED = {"run_python": "ENABLE_CODE_TOOL", "run_shell": "ENABLE_SHELL_TOOL"}
+
+
 def run_tool(name: str, args: dict, ctx: ToolContext) -> str:
     handler = _HANDLERS.get(name)
-    if handler is None or (name == "run_python" and not config.ENABLE_CODE_TOOL):
+    if handler is None or (name in _GATED and not getattr(config, _GATED[name])):
         return f"ERROR: unknown tool '{name}'"
     try:
         result = handler(args or {}, ctx)
@@ -339,10 +421,66 @@ def _improve_skill(args, ctx):
 
 def _run_python(args, ctx):
     proc = subprocess.run([sys.executable, "-c", args["code"]],
-                          capture_output=True, text=True, timeout=10)
+                          capture_output=True, text=True, timeout=10,
+                          cwd=str(config.WORKSPACE_DIR))
     out = proc.stdout[-4000:]
     err = proc.stderr[-2000:]
     return f"exit={proc.returncode}\nstdout:\n{out}\nstderr:\n{err}"
+
+
+# ---------------- digital-assistant tools ----------------
+
+def _list_dir(args, ctx):
+    return desktop.list_dir(args.get("path", "."))
+
+
+def _read_file(args, ctx):
+    return desktop.read_file(args["path"])
+
+
+def _write_file(args, ctx):
+    p = desktop.write_file(args["path"], args["content"])
+    return f"Wrote {desktop._rel(p)} ({p.stat().st_size} bytes)."
+
+
+def _make_dir(args, ctx):
+    p = desktop.make_dir(args["path"])
+    return f"Created folder {desktop._rel(p)}."
+
+
+def _move_file(args, ctx):
+    p = desktop.move(args["src"], args["dst"])
+    return f"Moved to {desktop._rel(p)}."
+
+
+def _delete_file(args, ctx):
+    return desktop.delete(args["path"])
+
+
+def _search_files(args, ctx):
+    return desktop.search_files(args["query"], args.get("path", "."))
+
+
+def _create_document(args, ctx):
+    p = desktop.create_document(
+        filename=args["filename"], doc_format=args["format"], title=args["title"],
+        sections=args.get("sections", []), table=args.get("table"))
+    ctx.deliver_file(p)
+    return f"Document created and sent to the user: {desktop._rel(p)}."
+
+
+def _send_file(args, ctx):
+    p = desktop.resolve(args["path"], must_exist=True)
+    ctx.deliver_file(p)
+    return f"Sending {desktop._rel(p)} to the user."
+
+
+def _git(args, ctx):
+    return desktop.git(args["repo_path"], args["command"])
+
+
+def _run_shell(args, ctx):
+    return desktop.run_shell(args["command"])
 
 
 _HANDLERS = {
@@ -358,5 +496,16 @@ _HANDLERS = {
     "use_skill": _use_skill,
     "create_skill": _create_skill,
     "improve_skill": _improve_skill,
+    "list_dir": _list_dir,
+    "read_file": _read_file,
+    "write_file": _write_file,
+    "make_dir": _make_dir,
+    "move_file": _move_file,
+    "delete_file": _delete_file,
+    "search_files": _search_files,
+    "create_document": _create_document,
+    "send_file": _send_file,
+    "git": _git,
     "run_python": _run_python,
+    "run_shell": _run_shell,
 }

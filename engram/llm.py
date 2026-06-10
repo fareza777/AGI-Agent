@@ -118,7 +118,7 @@ def _openai_chat(model: str, system: str, messages: list, max_tokens: int, ctx) 
         msg = _openai_request(payload)
         calls = msg.get("tool_calls") or []
         if not calls or ctx is None:
-            return (msg.get("content") or "").strip()
+            return _visible_text(msg)
         convo.append(msg)
         for call in calls:
             fn = call.get("function", {})
@@ -132,8 +132,13 @@ def _openai_chat(model: str, system: str, messages: list, max_tokens: int, ctx) 
                 "content": tools.run_tool(fn.get("name", ""), args, ctx),
             })
         payload["messages"] = convo
-    return (msg.get("content") or "").strip() \
-        or "(tool budget exhausted before I reached an answer)"
+    return _visible_text(msg) or "(tool budget exhausted before I reached an answer)"
+
+
+def _visible_text(msg: dict) -> str:
+    """User-facing text from an OpenAI-compatible message: strip reasoning."""
+    text = strip_reasoning(msg.get("content") or "")
+    return text or "(model hanya mengembalikan reasoning tanpa jawaban — coba ulangi)"
 
 
 def _openai_extract(system: str, user_text: str, schema: dict, max_tokens: int) -> dict:
@@ -150,7 +155,31 @@ def _openai_extract(system: str, user_text: str, schema: dict, max_tokens: int) 
         ],
         "response_format": {"type": "json_object"},
     })
-    return parse_json((msg.get("content") or "").strip())
+    # Strip reasoning BEFORE parsing — <think> blocks may contain stray braces.
+    return parse_json(strip_reasoning(msg.get("content") or ""))
+
+
+_THINK_BLOCK = re.compile(r"<\s*(think|thinking|reasoning)\s*>.*?<\s*/\s*\1\s*>",
+                          re.DOTALL | re.IGNORECASE)
+_THINK_CLOSE = re.compile(r"<\s*/\s*(think|thinking|reasoning)\s*>", re.IGNORECASE)
+_THINK_OPEN = re.compile(r"\A\s*<\s*(think|thinking|reasoning)\s*>", re.IGNORECASE)
+
+
+def strip_reasoning(text: str) -> str:
+    """Remove chain-of-thought that reasoning models (DeepSeek-R1 family,
+    Nemotron, MiniMax, ...) emit inline as <think>...</think> tags, so it never
+    reaches the user or the JSON parser."""
+    text = _THINK_BLOCK.sub("", text)
+    # Closing tag without a matching opening (opening was cut off upstream):
+    # everything before the last close is reasoning.
+    closes = list(_THINK_CLOSE.finditer(text))
+    if closes:
+        text = text[closes[-1].end():]
+    # Unclosed opening tag at the start: the whole message is reasoning that
+    # ran out of tokens — there is no visible answer.
+    elif _THINK_OPEN.match(text):
+        return ""
+    return text.strip()
 
 
 def parse_json(text: str) -> dict:

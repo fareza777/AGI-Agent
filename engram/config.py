@@ -57,9 +57,27 @@ MAX_RETRIEVED_EPISODES = 8
 CONVERSATION_TAIL = 16  # recent events included verbatim
 
 # Tool layer
-MAX_TOOL_ITERS = 8           # max tool-use round trips per turn
+MAX_TOOL_ITERS = 10          # max tool-use round trips per turn
 SKILLS_DIR = PROJECT_ROOT / "skills"
 REMINDER_POLL_SEC = 30       # scheduler tick
+
+# Digital-assistant workspace. All file/document tools are sandboxed to dirs in
+# ALLOWED_DIRS; by default just this workspace. Add more roots (e.g. your repos
+# folder) via ENGRAM_ALLOWED_DIRS=/path/a,/path/b to let the agent read/inspect
+# them. Files the agent generates land here and are delivered back over Telegram.
+WORKSPACE_DIR = Path(
+    os.environ.get("ENGRAM_WORKSPACE_DIR", str(PROJECT_ROOT / "workspace"))
+).resolve()
+ALLOWED_DIRS = [WORKSPACE_DIR] + [
+    Path(p.strip()).resolve()
+    for p in os.environ.get("ENGRAM_ALLOWED_DIRS", "").split(",") if p.strip()
+]
+
 # The run_python tool executes model-written code on your machine. Off by
 # default; enable only if you trust everyone who can message the bot.
 ENABLE_CODE_TOOL = os.environ.get("ENGRAM_ENABLE_CODE_TOOL", "0") == "1"
+# The run_shell tool runs shell commands (scoped to the workspace). Same trust
+# caveat — off by default.
+ENABLE_SHELL_TOOL = os.environ.get("ENGRAM_ENABLE_SHELL_TOOL", "0") == "1"
+SHELL_TIMEOUT_SEC = int(os.environ.get("ENGRAM_SHELL_TIMEOUT_SEC", "30"))
+MAX_FILE_READ_BYTES = 200_000

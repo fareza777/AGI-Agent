@@ -1,3 +1,11 @@
+# Core (required)
 anthropic>=0.92.0
 requests>=2.31.0
 python-dotenv>=1.0.0
+
+# Document generation (optional but recommended — enables docx/xlsx/pdf output).
+# Without these, the agent still produces md/html/txt/csv and tells you to
+# pip install the missing one when you ask for docx/xlsx/pdf.
+python-docx>=1.1.0
+openpyxl>=3.1.0
+reportlab>=4.0.0
