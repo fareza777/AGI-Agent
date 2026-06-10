@@ -15,6 +15,7 @@ Providers:
 import base64
 import json
 import re
+import time
 from pathlib import Path
 
 import requests
@@ -22,6 +23,31 @@ import requests
 from . import config, tools
 
 _anthropic_client = None
+
+
+class LLMError(Exception):
+    """Provider failure with a user-presentable message and HTTP status."""
+
+    def __init__(self, message: str, status: int = None):
+        super().__init__(message)
+        self.status = status
+
+
+def describe_error(exc: Exception) -> str:
+    """Short Indonesian-friendly description of a provider failure, for the
+    chat reply (the full traceback goes to the server log)."""
+    if isinstance(exc, LLMError):
+        return str(exc)
+    name = type(exc).__name__
+    if "RateLimit" in name:
+        return "kena rate limit provider — tunggu sebentar lalu coba lagi"
+    if "Authentication" in name or "PermissionDenied" in name:
+        return "API key ditolak provider — cek konfigurasi .env"
+    if "Connection" in name or "Timeout" in name:
+        return "koneksi ke provider bermasalah — cek jaringan server"
+    if "Overloaded" in name:
+        return "provider sedang kelebihan beban — coba lagi sebentar lagi"
+    return f"error provider ({name})"
 
 # ---------------- vision helpers ----------------
 # Neutral message form: {"role": "user", "content": str, "images": [paths]}.
@@ -150,8 +176,16 @@ def _anthropic_extract(system: str, user_text: str, schema: dict, max_tokens: in
 
 # ---------------- OpenAI-compatible (OpenRouter, MiniMax, ...) ----------------
 
+_RETRYABLE = {408, 409, 429, 500, 502, 503, 504, 524, 529}
+
+
 def _openai_request(payload: dict) -> dict:
-    """Returns the raw choices[0].message dict."""
+    """POST /chat/completions with retries. Returns choices[0].message.
+
+    Retries transient failures (429 rate limits — common on free OpenRouter
+    models — 5xx, timeouts) with backoff, honoring Retry-After. Raises
+    LLMError with the provider's real error message instead of a bare
+    HTTP status, so the user sees WHY a turn failed."""
     headers = {
         "Authorization": f"Bearer {config.LLM_API_KEY}",
         "Content-Type": "application/json",
@@ -161,13 +195,59 @@ def _openai_request(payload: dict) -> dict:
         headers["X-Title"] = "Engram"
     url = f"{config.OPENAI_BASE_URL}/chat/completions"
 
-    resp = requests.post(url, json=payload, headers=headers, timeout=180)
-    if resp.status_code >= 400 and "response_format" in payload:
-        # Some models/providers reject response_format — retry without it.
-        payload = {k: v for k, v in payload.items() if k != "response_format"}
-        resp = requests.post(url, json=payload, headers=headers, timeout=180)
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]
+    attempts = 3
+    last_err = "unknown error"
+    last_status = None
+    for attempt in range(attempts):
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=180)
+        except requests.RequestException as exc:
+            last_err, last_status = f"koneksi gagal ({type(exc).__name__})", None
+            time.sleep(2 ** attempt)
+            continue
+
+        if resp.status_code < 400:
+            data = resp.json()
+            choices = data.get("choices") or []
+            if not choices:
+                raise LLMError("provider mengembalikan respons kosong: "
+                               + str(data)[:200])
+            return choices[0]["message"]
+
+        last_status = resp.status_code
+        last_err = _provider_error(resp)
+        if resp.status_code in _RETRYABLE and attempt < attempts - 1:
+            retry_after = resp.headers.get("retry-after", "")
+            delay = (int(retry_after) if retry_after.isdigit()
+                     else 2 ** (attempt + 1))
+            time.sleep(min(delay, 30))
+            continue
+        if "response_format" in payload:
+            # Some models/providers reject response_format — retry without it.
+            payload = {k: v for k, v in payload.items() if k != "response_format"}
+            continue
+        break
+
+    hint = ""
+    if last_status == 429:
+        hint = " (model free sering kena rate limit — tunggu ~1 menit atau pakai model berbayar)"
+    elif last_status == 402:
+        hint = " (kredit provider habis)"
+    raise LLMError(f"provider error {last_status or ''}: {last_err}{hint}".strip(),
+                   status=last_status)
+
+
+def _provider_error(resp) -> str:
+    """Pull the human-readable error out of a provider error body."""
+    try:
+        err = resp.json().get("error")
+        if isinstance(err, dict):
+            return str(err.get("message") or err)[:300]
+        if err:
+            return str(err)[:300]
+    except ValueError:
+        pass
+    return (resp.text or "")[:300] or f"HTTP {resp.status_code}"
 
 
 def _openai_chat(model: str, system: str, messages: list, max_tokens: int, ctx) -> str:
@@ -182,7 +262,10 @@ def _openai_chat(model: str, system: str, messages: list, max_tokens: int, ctx) 
         calls = msg.get("tool_calls") or []
         if not calls or ctx is None:
             return _visible_text(msg)
-        convo.append(msg)
+        # Echo back ONLY the standard fields. Some models attach extras
+        # (reasoning, refusal, provider metadata) that other requests then
+        # reject with 400 — a classic intermittent-failure source.
+        convo.append(_clean_assistant(msg))
         for call in calls:
             fn = call.get("function", {})
             try:
@@ -205,15 +288,29 @@ def _openai_chat(model: str, system: str, messages: list, max_tokens: int, ctx) 
     return _visible_text(msg) or "(tool budget exhausted before I reached an answer)"
 
 
+def _clean_assistant(msg: dict) -> dict:
+    """Reduce an assistant message to the fields every OpenAI-compatible
+    endpoint accepts back: role, content, tool_calls."""
+    out = {"role": "assistant", "content": msg.get("content") or ""}
+    calls = []
+    for c in msg.get("tool_calls") or []:
+        fn = c.get("function") or {}
+        calls.append({"id": c.get("id", ""), "type": "function",
+                      "function": {"name": fn.get("name", ""),
+                                   "arguments": fn.get("arguments") or "{}"}})
+    if calls:
+        out["tool_calls"] = calls
+    return out
+
+
 def _openai_vision_request(payload: dict) -> dict:
     """Like _openai_request, but if the model rejects image input (no vision
     support), strip the images and retry once with a textual note instead of
     failing the whole turn."""
     try:
         return _openai_request(payload)
-    except requests.HTTPError as exc:
-        if not (exc.response is not None and exc.response.status_code == 400
-                and _has_images(payload["messages"])):
+    except LLMError as exc:
+        if exc.status != 400 or not _has_images(payload["messages"]):
             raise
         payload = dict(payload)
         payload["messages"] = _strip_images(payload["messages"])

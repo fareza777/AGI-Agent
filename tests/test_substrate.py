@@ -385,6 +385,56 @@ class LessonsInContextTests(unittest.TestCase):
         self.assertIn("Indonesian", system)
 
 
+class ProviderRobustnessTests(unittest.TestCase):
+    """The fixes for intermittent 'gagal menghubungi model' failures."""
+
+    def test_clean_assistant_drops_provider_extras(self):
+        from engram.llm import _clean_assistant
+        msg = {"role": "assistant", "content": None, "reasoning": "secret chain",
+               "refusal": None, "provider_meta": {"x": 1},
+               "tool_calls": [{"id": "c1", "type": "function", "index": 0,
+                               "function": {"name": "web_search",
+                                            "arguments": '{"query": "x"}',
+                                            "extra": True}}]}
+        out = _clean_assistant(msg)
+        self.assertEqual(set(out), {"role", "content", "tool_calls"})
+        self.assertEqual(out["content"], "")
+        call = out["tool_calls"][0]
+        self.assertEqual(set(call), {"id", "type", "function"})
+        self.assertEqual(set(call["function"]), {"name", "arguments"})
+
+    def test_provider_error_extraction(self):
+        from engram.llm import _provider_error
+
+        class FakeResp:
+            status_code = 429
+            text = "ignored"
+            def json(self):
+                return {"error": {"message": "Rate limit exceeded: free-models-per-min"}}
+
+        self.assertIn("Rate limit exceeded", _provider_error(FakeResp()))
+
+        class FakeRespPlain:
+            status_code = 502
+            text = "Bad gateway"
+            def json(self):
+                raise ValueError("not json")
+
+        self.assertEqual(_provider_error(FakeRespPlain()), "Bad gateway")
+
+    def test_describe_error(self):
+        from engram.llm import LLMError, describe_error
+        err = LLMError("provider error 429: Rate limit exceeded (model free ...)",
+                       status=429)
+        self.assertIn("429", describe_error(err))
+
+        class RateLimitError(Exception):
+            pass
+
+        self.assertIn("rate limit", describe_error(RateLimitError()))
+        self.assertIn("provider", describe_error(ValueError("boom")))
+
+
 class ParseJsonTests(unittest.TestCase):
     """parse_json handles the messy outputs of OpenAI-compatible providers."""
 

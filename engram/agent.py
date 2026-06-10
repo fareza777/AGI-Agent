@@ -43,9 +43,11 @@ class Agent:
         ctx = ToolContext(self.store, chat_id, activity=activity)
         try:
             reply = llm.chat(system, messages, ctx=ctx)
-        except Exception:
+        except Exception as exc:
             log.exception("chat model call failed")
-            reply = "Maaf, saya gagal menghubungi model. Coba lagi sebentar lagi."
+            reply = f"⚠️ Gagal: {llm.describe_error(exc)}."
+            if ctx.produced_files:
+                reply += ("\nFile yang sempat dibuat tetap saya kirim di bawah.")
         self.store.log_event("agent", "message", reply, chat_id)
 
         # Inline trigger: consolidate when enough raw experience has piled up,
