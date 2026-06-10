@@ -21,11 +21,28 @@ logging.basicConfig(
 
 
 def main() -> int:
-    missing = [name for name, val in
-               [("ANTHROPIC_API_KEY", config.ANTHROPIC_API_KEY),
-                ("TELEGRAM_BOT_TOKEN", config.TELEGRAM_BOT_TOKEN)] if not val]
-    if missing:
-        print(f"Missing required env vars: {', '.join(missing)} (see .env.example)")
+    problems = []
+    if not config.TELEGRAM_BOT_TOKEN:
+        problems.append("TELEGRAM_BOT_TOKEN is not set")
+    if config.PROVIDER == "anthropic":
+        if not config.ANTHROPIC_API_KEY:
+            problems.append("ANTHROPIC_API_KEY is not set")
+    else:
+        if not config.LLM_API_KEY:
+            problems.append(
+                "no API key for provider "
+                f"'{config.PROVIDER}' (set ENGRAM_LLM_API_KEY, OPENROUTER_API_KEY, "
+                "or MINIMAX_API_KEY)")
+        if not config.OPENAI_BASE_URL:
+            problems.append("ENGRAM_OPENAI_BASE_URL is not set for this provider")
+        if not config.CHAT_MODEL:
+            problems.append(
+                "ENGRAM_CHAT_MODEL must be set for non-anthropic providers, e.g. "
+                "'minimax/minimax-m2' (OpenRouter) or 'MiniMax-M2' (MiniMax direct)")
+    if problems:
+        print("Configuration problems (see .env.example):")
+        for p in problems:
+            print(f"  - {p}")
         return 1
 
     agent = Agent()

@@ -12,8 +12,32 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
-CHAT_MODEL = os.environ.get("ENGRAM_CHAT_MODEL", "claude-opus-4-8")
-CONSOLIDATE_MODEL = os.environ.get("ENGRAM_CONSOLIDATE_MODEL", "claude-opus-4-8")
+# LLM provider: "anthropic" (default, official SDK) or any OpenAI-compatible
+# API — "openrouter", "minimax", or "openai" (generic, set your own base URL).
+PROVIDER = os.environ.get("ENGRAM_PROVIDER", "anthropic").lower()
+
+_DEFAULT_BASE_URLS = {
+    "openrouter": "https://openrouter.ai/api/v1",
+    "minimax": "https://api.minimax.io/v1",
+}
+OPENAI_BASE_URL = os.environ.get(
+    "ENGRAM_OPENAI_BASE_URL", _DEFAULT_BASE_URLS.get(PROVIDER, "")
+).rstrip("/")
+
+LLM_API_KEY = (
+    os.environ.get("ENGRAM_LLM_API_KEY")
+    or os.environ.get("OPENROUTER_API_KEY")
+    or os.environ.get("MINIMAX_API_KEY")
+    or ""
+)
+
+# Model IDs are provider-specific. The claude-opus-4-8 default only applies to
+# the anthropic provider; for others you must set the model explicitly
+# (e.g. "anthropic/claude-opus-4.5" or "minimax/minimax-m2" on OpenRouter,
+# "MiniMax-M2" on MiniMax direct).
+_DEFAULT_MODEL = "claude-opus-4-8" if PROVIDER == "anthropic" else ""
+CHAT_MODEL = os.environ.get("ENGRAM_CHAT_MODEL", _DEFAULT_MODEL)
+CONSOLIDATE_MODEL = os.environ.get("ENGRAM_CONSOLIDATE_MODEL", CHAT_MODEL)
 
 DB_PATH = os.environ.get("ENGRAM_DB_PATH", str(PROJECT_ROOT / "engram.db"))
 IDENTITY_PATH = PROJECT_ROOT / "identity" / "CORE.md"

@@ -131,16 +131,53 @@ Deliberate simplifications in this minimal version, and the upgrade path:
 - **Supersession-only contradiction handling** — the dispute/refinement
   branches from S4 come with the LLM judgment step.
 
+## Using OpenRouter, MiniMax, or any OpenAI-compatible API
+
+The default provider is Anthropic (Claude Opus 4.8 via the official SDK), but
+the LLM layer is pluggable — no code changes needed, just `.env`:
+
+```bash
+# OpenRouter
+ENGRAM_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-...
+ENGRAM_CHAT_MODEL=minimax/minimax-m2        # any OpenRouter model ID works
+
+# MiniMax direct
+ENGRAM_PROVIDER=minimax
+MINIMAX_API_KEY=...
+ENGRAM_CHAT_MODEL=MiniMax-M2
+
+# Anything else with an OpenAI-compatible /chat/completions endpoint
+ENGRAM_PROVIDER=openai
+ENGRAM_LLM_API_KEY=...
+ENGRAM_OPENAI_BASE_URL=https://your-endpoint/v1
+ENGRAM_CHAT_MODEL=your-model-id
+```
+
+Notes:
+- Model IDs are provider-specific — for non-Anthropic providers you must set
+  `ENGRAM_CHAT_MODEL` explicitly (the startup check will tell you if you forget).
+- Memory consolidation needs the model to return clean JSON. On Anthropic this
+  is enforced by native structured outputs; on other providers Engram instructs
+  the model and parses defensively — strong instruction-following models
+  (MiniMax-M2, large open models) work well, very small models may produce
+  noisier memory.
+- If your MiniMax account uses a different endpoint, override
+  `ENGRAM_OPENAI_BASE_URL`.
+
 ## Configuration
 
 Everything via environment variables (see [.env.example](.env.example)):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | required |
 | `TELEGRAM_BOT_TOKEN` | — | required |
-| `ENGRAM_CHAT_MODEL` | `claude-opus-4-8` | model for replies (adaptive thinking) |
-| `ENGRAM_CONSOLIDATE_MODEL` | `claude-opus-4-8` | model for background jobs — set `claude-haiku-4-5` to cut costs |
+| `ENGRAM_PROVIDER` | `anthropic` | `anthropic`, `openrouter`, `minimax`, or `openai` |
+| `ANTHROPIC_API_KEY` | — | required for the `anthropic` provider |
+| `ENGRAM_LLM_API_KEY` / `OPENROUTER_API_KEY` / `MINIMAX_API_KEY` | — | key for the other providers |
+| `ENGRAM_OPENAI_BASE_URL` | per provider | OpenAI-compatible base URL |
+| `ENGRAM_CHAT_MODEL` | `claude-opus-4-8` (anthropic only) | model for replies |
+| `ENGRAM_CONSOLIDATE_MODEL` | same as chat model | model for background jobs — a cheaper model cuts costs |
 | `ENGRAM_DB_PATH` | `./engram.db` | where the mind lives — **back this file up** |
 | `ENGRAM_CONSOLIDATE_INTERVAL_MIN` | `30` | sleep-cycle period |
 | `ENGRAM_ALLOWED_CHAT_IDS` | open | comma-separated chat ID allowlist |

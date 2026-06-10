@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engram.store import Store  # noqa: E402
 from engram import composer, identity  # noqa: E402
+from engram.llm import parse_json  # noqa: E402
 
 
 class StoreTests(unittest.TestCase):
@@ -75,6 +76,20 @@ class StoreTests(unittest.TestCase):
     def test_meta_roundtrip(self):
         self.store.set_meta("tg_offset", "42")
         self.assertEqual(self.store.get_meta("tg_offset"), "42")
+
+
+class ParseJsonTests(unittest.TestCase):
+    """parse_json handles the messy outputs of OpenAI-compatible providers."""
+
+    def test_clean_json(self):
+        self.assertEqual(parse_json('{"claims": []}'), {"claims": []})
+
+    def test_fenced_json(self):
+        self.assertEqual(parse_json('```json\n{"a": 1}\n```'), {"a": 1})
+
+    def test_json_with_prose(self):
+        text = 'Here is the result:\n{"claims": [{"x": 1}]}\nHope that helps!'
+        self.assertEqual(parse_json(text), {"claims": [{"x": 1}]})
 
 
 if __name__ == "__main__":
