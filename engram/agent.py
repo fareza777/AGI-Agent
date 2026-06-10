@@ -7,6 +7,7 @@ import threading
 import time
 
 from . import composer, config, consolidator, llm, skill_compiler
+from . import store as store_mod
 from .store import Store
 from .tools import ToolContext
 
@@ -19,9 +20,11 @@ class Agent:
         self._stop = threading.Event()
         self._bg_thread = None
         self._scheduler_thread = None
-        # Set by the interface (e.g. TelegramBot): callable(chat_id, text).
-        # Used by the scheduler to deliver due reminders.
+        # Set by the interface (e.g. TelegramBot): callable(chat_id, text) and
+        # callable(chat_id, path). Used by the scheduler to deliver reminders
+        # and scheduled-task results/files.
         self.notifier = None
+        self.file_notifier = None
 
     # ---------------- one chat turn ----------------
 
@@ -56,7 +59,8 @@ class Agent:
         self._stop.set()
 
     def _scheduler_loop(self):
-        """Deliver due reminders. Failures leave the reminder pending for retry."""
+        """Deliver due reminders and execute due agent tasks.
+        Failures leave the item pending/active so it retries next tick."""
         while not self._stop.wait(config.REMINDER_POLL_SEC):
             if self.notifier is None:
                 continue
@@ -69,6 +73,27 @@ class Agent:
                 self.store.set_reminder_status(r["id"], "sent")
                 self.store.log_event("agent", "message",
                                      f"(reminder delivered) {r['message']}", r["chat_id"])
+            for t in self.store.due_tasks():
+                self._run_task(t)
+
+    def _run_task(self, task):
+        """Execute one scheduled task as a full agent turn (tools included) and
+        deliver the result. Proactive autonomy: the agent works unprompted."""
+        log.info("running scheduled task #%s: %s", task["id"], task["prompt"][:80])
+        try:
+            reply, files = self.handle_message(
+                task["chat_id"],
+                f"[TUGAS TERJADWAL #{task['id']} — jalankan sekarang dan laporkan "
+                f"hasilnya] {task['prompt']}")
+            self.notifier(task["chat_id"], f"🤖 Tugas terjadwal #{task['id']}:\n\n{reply}")
+            if self.file_notifier:
+                for path in files:
+                    self.file_notifier(task["chat_id"], path)
+        except Exception:
+            log.exception("scheduled task #%s failed; will retry next tick", task["id"])
+            return
+        self.store.complete_task_run(
+            task["id"], store_mod.next_occurrence(task["due_ts"], task["recurrence"]))
 
     def _loop(self):
         interval = config.CONSOLIDATE_INTERVAL_MIN * 60

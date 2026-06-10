@@ -66,6 +66,7 @@ why a Hermes/OpenClaw-style agent (flat text memory) can't replicate them:
 | `belief_history` | Reads the full timeline of one belief — "what did I believe and when" |
 | `manage_goal` | Add/complete/list goals in the persistent goal tree |
 | `schedule_reminder` / `list_reminders` | Future-dated messages, delivered by a background scheduler even days later |
+| `schedule_task` / `list_tasks` / `cancel_task` | **Proactive autonomy**: "kirim analisis saham tiap pagi jam 7" — at the due time the agent *executes the prompt itself* (with all tools, including document generation) and sends you the result; supports once / hourly / daily / weekly / every:N-minutes, survives restarts, skips missed runs instead of replaying them |
 
 **Digital-assistant tools** — turn it into a do-things assistant:
 
@@ -97,6 +98,16 @@ get md/html/txt/csv and a clear "pip install" hint for the rest.
 (tidy bullets, bold, code), markdown tables are flattened to readable lines
 instead of walls of `|`, and any leaked `<think>` reasoning from
 reasoning-models is stripped before it reaches you.
+
+**Send files TO the agent:** drop a document or photo into the chat — it lands
+in `workspace/inbox/` (sanitized filenames, deduped) and the agent is told
+about it in the same turn, so "ini notulen rapat, rapikan jadi minutes" works:
+it reads the file, processes it, and can send back a formatted document.
+
+**Learning loop (S10):** lessons distilled from corrections and failed tool
+calls become `lesson` claims, and the five most recent are *always* in the
+agent's context — not only when keywords match — so the same mistake isn't
+repeated next week.
 
 Every tool call is appended to the episodic event log, so the consolidation
 engine can distill *lessons* from what worked and what failed — tool use feeds
@@ -218,7 +229,8 @@ rest can be layered on without rewrites:
 | S9 Insight Generator | ✅ minimal | `consolidator.reflect()` |
 | Tool layer + skill library | ✅ implemented | `engram/tools.py`, `engram/skills.py`, `skills/` |
 | S8 Skill Compiler | ✅ staged rollout | `engram/skill_compiler.py` — create_skill/improve_skill tools + background mining with draft→approve gate |
-| S10 Learning Loop (outcomes) | 🔜 partial | tool calls + skill changelogs land in the event log; explicit outcome scoring comes later |
+| S10 Learning Loop | ✅ lessons loop | consolidation distills corrections/failures into `lesson` claims; recent lessons are pinned into every context (`composer.py`); explicit outcome scoring comes later |
+| Proactive scheduling (S7 scheduler) | ✅ implemented | recurring agent tasks: the scheduler runs full agent turns and delivers results + files |
 
 Deliberate simplifications in this minimal version, and the upgrade path:
 

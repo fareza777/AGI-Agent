@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engram.store import Store  # noqa: E402
+from engram.store import Store, next_occurrence  # noqa: E402
 from engram import config, composer, identity, skills, desktop, telegram_format  # noqa: E402
 from engram.llm import parse_json, strip_reasoning  # noqa: E402
 from engram.tools import ToolContext, run_tool  # noqa: E402
@@ -208,6 +208,111 @@ class SkillLearningTests(unittest.TestCase):
         skills.save("temp_skill", "d", "b")
         self.assertTrue(skills.drop("temp_skill"))
         self.assertIsNone(skills.get("temp_skill"))
+
+
+class ScheduledTaskTests(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+        self.ctx = ToolContext(self.store, "c1")
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.path)
+
+    def test_schedule_list_cancel_via_tools(self):
+        out = run_tool("schedule_task",
+                       {"prompt": "kirim ringkasan berita AI",
+                        "due_at": "2099-01-01T00:00:00Z",
+                        "recurrence": "daily"}, self.ctx)
+        self.assertIn("Task #1 scheduled (daily)", out)
+        out = run_tool("list_tasks", {}, self.ctx)
+        self.assertIn("ringkasan berita AI", out)
+        self.assertIn("[daily]", out)
+        self.assertIn("cancelled", run_tool("cancel_task", {"task_id": 1}, self.ctx))
+        self.assertIn("No scheduled tasks", run_tool("list_tasks", {}, self.ctx))
+
+    def test_schedule_task_validation(self):
+        out = run_tool("schedule_task",
+                       {"prompt": "x", "due_at": "2001-01-01T00:00:00Z"}, self.ctx)
+        self.assertIn("ERROR", out)
+        out = run_tool("schedule_task",
+                       {"prompt": "x", "due_at": "2099-01-01T00:00:00Z",
+                        "recurrence": "fortnightly"}, self.ctx)
+        self.assertIn("ERROR", out)
+
+    def test_due_and_complete_run(self):
+        # due in the past → shows up in due_tasks
+        self.store.add_task("c1", "do it", "2001-01-01T00:00:00Z", "daily")
+        due = self.store.due_tasks()
+        self.assertEqual(len(due), 1)
+        # recurring: completing reschedules into the future
+        nxt = next_occurrence(due[0]["due_ts"], due[0]["recurrence"])
+        self.store.complete_task_run(due[0]["id"], nxt)
+        self.assertEqual(self.store.due_tasks(), [])
+        self.assertEqual(len(self.store.active_tasks("c1")), 1)
+        # one-shot: completing marks done
+        tid = self.store.add_task("c1", "once", "2001-01-01T00:00:00Z", None)
+        self.store.complete_task_run(tid, next_occurrence("2001-01-01T00:00:00Z", None))
+        self.assertEqual(len(self.store.active_tasks("c1")), 1)  # only the daily one
+
+    def test_next_occurrence(self):
+        # recurring from the distant past lands in the future (skips missed runs)
+        nxt = next_occurrence("2001-01-01T00:00:00Z", "daily")
+        self.assertGreater(nxt, "2026-01-01T00:00:00Z")
+        self.assertTrue(nxt.endswith("T00:00:00Z"))   # keeps the time-of-day
+        self.assertIsNone(next_occurrence("2001-01-01T00:00:00Z", None))
+        self.assertIsNotNone(next_occurrence("2001-01-01T00:00:00Z", "every:90"))
+        self.assertIsNone(next_occurrence("2001-01-01T00:00:00Z", "every:abc"))
+
+
+class InboxTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_ws = config.WORKSPACE_DIR
+        self._orig_dirs = config.ALLOWED_DIRS
+        config.WORKSPACE_DIR = __import__("pathlib").Path(self.tmp).resolve()
+        config.ALLOWED_DIRS = [config.WORKSPACE_DIR]
+
+    def tearDown(self):
+        import shutil
+        config.WORKSPACE_DIR = self._orig_ws
+        config.ALLOWED_DIRS = self._orig_dirs
+        shutil.rmtree(self.tmp)
+
+    def test_safe_filename(self):
+        self.assertEqual(desktop.safe_filename("../../etc/passwd"), "passwd")
+        self.assertEqual(desktop.safe_filename("..\\..\\win\\evil.exe"), "evil.exe")
+        self.assertEqual(desktop.safe_filename(""), "file.bin")
+
+    def test_save_inbox_dedupes(self):
+        p1 = desktop.save_inbox_bytes("report.txt", b"a")
+        p2 = desktop.save_inbox_bytes("report.txt", b"b")
+        self.assertNotEqual(p1, p2)
+        self.assertEqual(p1.read_bytes(), b"a")
+        self.assertEqual(p2.read_bytes(), b"b")
+        self.assertTrue(str(p1).startswith(str(config.WORKSPACE_DIR)))
+
+
+class LessonsInContextTests(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.path)
+
+    def test_lessons_always_in_context(self):
+        self.store.add_claim("agent", "lesson_doc_language",
+                             "always write documents in Indonesian",
+                             "lesson", 0.9, [], "c1")
+        # query shares no keywords with the lesson — it must still appear
+        system, _ = composer.build_context(self.store, "c1", "berapa 2+2?")
+        self.assertIn("LESSONS FROM PAST MISTAKES", system)
+        self.assertIn("Indonesian", system)
 
 
 class ParseJsonTests(unittest.TestCase):

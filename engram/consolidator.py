@@ -58,7 +58,12 @@ Rules:
   slot — that is how the agent detects when something changed.
 - confidence: 0.95 for the user's explicit statements, 0.7 for clear
   implications, 0.5 for guesses.
-- kind "lesson" is for things the agent should do differently next time.
+- kind "lesson" is for things the agent should do differently next time. Watch
+  specifically for: the user correcting the agent, a tool call that failed and
+  how it was fixed, output the user disliked (format, length, language). Write
+  the lesson as an actionable rule, e.g. "when making documents for the user,
+  use Indonesian unless asked otherwise" (subject "agent", predicate like
+  lesson_document_language).
 - Return an empty list if nothing is worth remembering."""
 
 _INSIGHT_SCHEMA = {

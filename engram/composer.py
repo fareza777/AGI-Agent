@@ -36,6 +36,11 @@ not shown here.
   don't guess.
 - schedule_reminder: when the user asks to be reminded, schedule it (compute
   the UTC time from the current time below) and confirm the exact time back.
+- schedule_task: when the user wants something DONE later or routinely ("kirim
+  analisis tiap pagi", "cek X tiap jam", "buatkan laporan hari Senin") —
+  schedule an agent task; your future self executes the prompt with all tools
+  and sends the result. Write the prompt self-contained (include topic,
+  format, language) because future-you only sees that prompt.
 - use_skill: load a skill when the task matches its description.
 - create_skill: when the user teaches you a procedure or asks you to remember
   how to do something, save it as a skill so you never have to be told again.
@@ -94,6 +99,17 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
         lines = ["## ACTIVE GOALS"]
         for g in goals:
             lines.append(f"- #{g['id']} {g['title']} (since {g['created_at'][:10]})")
+        parts.append("\n".join(lines))
+
+    # S10 learning loop: lessons distilled from past mistakes are always in
+    # view (not just when keywords match), so the same mistake isn't repeated.
+    lesson_rows = store.recent_lessons(limit=5)
+    seen = {c["id"] for c in claims}
+    lesson_rows = [l for l in lesson_rows if l["id"] not in seen]
+    if lesson_rows:
+        lines = ["## LESSONS FROM PAST MISTAKES (follow these)"]
+        for l in lesson_rows:
+            lines.append(f"- {l['value']} [{l['valid_from'][:10]}]")
         parts.append("\n".join(lines))
 
     skill_index = skills.index()

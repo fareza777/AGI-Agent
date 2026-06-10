@@ -12,7 +12,7 @@ Full-text retrieval uses SQLite FTS5 (BM25) over both events and claims.
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import config
 
@@ -74,6 +74,17 @@ CREATE TABLE IF NOT EXISTS reminders (
     message    TEXT NOT NULL,
     status     TEXT NOT NULL DEFAULT 'pending',  -- pending | sent | cancelled
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id         INTEGER PRIMARY KEY,
+    chat_id    TEXT NOT NULL,
+    prompt     TEXT NOT NULL,                    -- what the agent should DO
+    due_ts     TEXT NOT NULL,                    -- next run, ISO 8601 UTC
+    recurrence TEXT,                             -- NULL=once | hourly | daily | weekly | every:<minutes>
+    status     TEXT NOT NULL DEFAULT 'active',   -- active | done | cancelled
+    created_at TEXT NOT NULL,
+    last_run   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -292,6 +303,66 @@ class Store:
             self._conn.commit()
             return cur.rowcount > 0
 
+    # ---------------- scheduled agent tasks ----------------
+
+    def add_task(self, chat_id: str, prompt: str, due_ts: str,
+                 recurrence: str = None) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO tasks (chat_id, prompt, due_ts, recurrence, created_at) "
+                "VALUES (?,?,?,?,?)",
+                (chat_id, prompt, due_ts, recurrence, now_iso()),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def due_tasks(self) -> list:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM tasks WHERE status='active' AND due_ts<=? ORDER BY due_ts",
+                (now_iso(),),
+            ).fetchall()
+
+    def active_tasks(self, chat_id: str) -> list:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM tasks WHERE chat_id=? AND status='active' ORDER BY due_ts",
+                (chat_id,),
+            ).fetchall()
+
+    def complete_task_run(self, task_id: int, next_due: str = None) -> None:
+        """Record a run; reschedule if recurring, else mark done."""
+        with self._lock:
+            if next_due:
+                self._conn.execute(
+                    "UPDATE tasks SET due_ts=?, last_run=? WHERE id=?",
+                    (next_due, now_iso(), task_id),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE tasks SET status='done', last_run=? WHERE id=?",
+                    (now_iso(), task_id),
+                )
+            self._conn.commit()
+
+    def set_task_status(self, task_id: int, status: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE tasks SET status=? WHERE id=?", (status, task_id)
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    # ---------------- lessons (S10 learning loop) ----------------
+
+    def recent_lessons(self, limit: int = 5) -> list:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM claims WHERE kind='lesson' AND valid_to IS NULL "
+                "ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+
     # ---------------- meta (e.g. Telegram update offset) ----------------
 
     def get_meta(self, key: str, default: str = None) -> str:
@@ -316,3 +387,32 @@ def _fts_query(text: str) -> str:
     """Convert free text to a safe FTS5 OR-query of quoted terms."""
     terms = [t for t in "".join(c if c.isalnum() else " " for c in text).split() if len(t) > 1]
     return " OR ".join(f'"{t}"' for t in terms[:12])
+
+
+_RECURRENCES = {"hourly": 60, "daily": 60 * 24, "weekly": 60 * 24 * 7}
+
+
+def next_occurrence(due_iso: str, recurrence: str) -> str:
+    """Next due timestamp for a recurring task, or None for one-shot tasks.
+
+    Skips ahead past missed runs (e.g. the bot was offline for two days), so a
+    daily task fires once on restart instead of replaying every missed day.
+    """
+    if not recurrence:
+        return None
+    rec = recurrence.strip().lower()
+    if rec.startswith("every:"):
+        try:
+            minutes = max(1, int(rec.split(":", 1)[1]))
+        except ValueError:
+            return None
+    else:
+        minutes = _RECURRENCES.get(rec)
+        if minutes is None:
+            return None
+    due = datetime.strptime(due_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    step = timedelta(minutes=minutes)
+    while due <= now:
+        due += step
+    return due.strftime("%Y-%m-%dT%H:%M:%SZ")

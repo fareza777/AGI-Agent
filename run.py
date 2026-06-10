@@ -47,7 +47,8 @@ def main() -> int:
 
     agent = Agent()
     bot = TelegramBot(agent)
-    agent.notifier = bot.send       # lets the scheduler deliver reminders
+    agent.notifier = bot.send                # scheduler: reminders + task results
+    agent.file_notifier = bot.send_document  # scheduler: files from task runs
     agent.start_background()
     try:
         bot.run()

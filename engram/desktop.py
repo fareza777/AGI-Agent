@@ -61,6 +61,30 @@ def _rel(p: Path) -> str:
         return str(p)
 
 
+def safe_filename(name: str) -> str:
+    """Sanitize an externally-supplied filename (e.g. from Telegram) so it can
+    never escape the inbox: strip directories, drop control chars."""
+    base = os.path.basename(name.replace("\\", "/")).strip()
+    base = "".join(c for c in base if c.isprintable() and c not in '<>:"|?*')
+    return base or "file.bin"
+
+
+def save_inbox_bytes(filename: str, data: bytes) -> Path:
+    """Save incoming bytes to workspace/inbox/<safe name>, deduping on clash."""
+    ensure_workspace()
+    inbox = config.WORKSPACE_DIR / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    name = safe_filename(filename)
+    target = inbox / name
+    stem, suffix = target.stem, target.suffix
+    n = 1
+    while target.exists():
+        target = inbox / f"{stem}_{n}{suffix}"
+        n += 1
+    target.write_bytes(data)
+    return target
+
+
 # ---------------- file operations ----------------
 
 def list_dir(path: str = ".") -> str:

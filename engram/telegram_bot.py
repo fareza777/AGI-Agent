@@ -55,13 +55,16 @@ jangka panjang, mendeteksi saat informasi berubah, dan menyimpan goals lintas se
 
 Saya juga bisa bertindak, bukan cuma menjawab:
 • Bikin dokumen — laporan docx, spreadsheet xlsx, pdf, dll ("buatkan laporan ...")
+• Tugas terjadwal & berulang — "kirim analisis saham tiap pagi jam 7" → saya \
+kerjakan sendiri dan kirim hasilnya, rutin
+• Terima file — kirim dokumen ke chat ini, saya simpan dan bisa langsung olah
 • Kelola file di workspace — tulis, baca, cari, rapikan
 • Cek repository git (status, log, diff)
 • Cari web, buka URL, kalkulator, pengingat terjadwal
 • Akses langsung ke memori saya sendiri
 
 Cukup minta dalam obrolan ("buatkan laporan penjualan dalam docx", \
-"ingatkan aku besok jam 9", "cek status repo di /path/repo").
+"ringkas berita crypto tiap pagi", "cek status repo di /path/repo").
 
 Perintah:
 /memory <kata kunci> — cari apa yang saya ingat
@@ -70,6 +73,8 @@ Perintah:
 /goal <teks> — tambah goal
 /done <id> — tandai goal selesai
 /reminders — daftar pengingat terjadwal
+/tasks — daftar tugas terjadwal (yang saya kerjakan otomatis)
+/canceltask <id> — batalkan tugas terjadwal
 /skills — daftar skill (termasuk draft hasil belajar)
 /skill <nama> — lihat isi satu skill
 /approve <nama> — aktifkan draft skill yang saya usulkan
@@ -153,12 +158,20 @@ class TelegramBot:
         text = (msg.get("text") or "").strip()
         chat = msg.get("chat") or {}
         chat_id = str(chat.get("id", ""))
-        if not text or not chat_id:
+        if not chat_id:
             return
         if config.ALLOWED_CHAT_IDS and chat_id not in config.ALLOWED_CHAT_IDS:
             log.warning("ignoring message from non-allowed chat %s", chat_id)
             return
 
+        # Incoming files (documents/photos) land in workspace/inbox and become
+        # part of the turn, so the agent can read/process them immediately.
+        attachment_note = self._receive_attachments(chat_id, msg)
+        if attachment_note:
+            text = f"{msg.get('caption', '').strip()}\n{attachment_note}".strip()
+
+        if not text:
+            return
         if text.startswith("/"):
             self._handle_command(chat_id, text)
         else:
@@ -168,6 +181,52 @@ class TelegramBot:
             for path in files:
                 self._call("sendChatAction", chat_id=chat_id, action="upload_document")
                 self.send_document(chat_id, path)
+
+    # ---------------- incoming files ----------------
+
+    MAX_DOWNLOAD = 20 * 1024 * 1024  # Telegram bot API download cap
+
+    def _receive_attachments(self, chat_id: str, msg: dict) -> str:
+        """Download document/photo attachments into workspace/inbox.
+        Returns a note for the model describing what arrived ('' if none)."""
+        saved = []
+        doc = msg.get("document")
+        if doc:
+            path = self._download(doc.get("file_id"), doc.get("file_name", "file.bin"),
+                                  doc.get("file_size"))
+            if path:
+                saved.append(path)
+        photos = msg.get("photo") or []
+        if photos:
+            largest = max(photos, key=lambda p: p.get("file_size", 0))
+            path = self._download(largest.get("file_id"), "photo.jpg",
+                                  largest.get("file_size"))
+            if path:
+                saved.append(path)
+        if not saved:
+            return ""
+        rel = [str(p.relative_to(config.WORKSPACE_DIR)) for p in saved]
+        return ("[Pengguna baru saja mengirim file, tersimpan di workspace: "
+                + ", ".join(rel)
+                + ". Gunakan read_file untuk file teks; file biner (gambar/pdf) "
+                  "bisa dikelola/dipindah tapi tidak bisa kamu baca isinya. "
+                  "Tanggapi sesuai konteks.]")
+
+    def _download(self, file_id: str, fallback_name: str, size):
+        from . import desktop
+        if not file_id or (size and size > self.MAX_DOWNLOAD):
+            return None
+        try:
+            info = self._call("getFile", file_id=file_id)
+            file_path = info.get("file_path", "")
+            url = f"https://api.telegram.org/file/bot{self.token}/{file_path}"
+            resp = self.session.get(url, timeout=120)
+            resp.raise_for_status()
+            name = os.path.basename(file_path) or fallback_name
+            return desktop.save_inbox_bytes(name, resp.content)
+        except Exception:
+            log.exception("failed to download attachment %s", file_id)
+            return None
 
     # ---------------- commands ----------------
 
@@ -259,6 +318,25 @@ class TelegramBot:
                 return
             lines = [f"#{r['id']} {r['due_ts']} UTC — {r['message']}" for r in rows]
             self.send(chat_id, "Pengingat terjadwal:\n" + "\n".join(lines))
+
+        elif cmd == "/tasks":
+            rows = self.store.active_tasks(chat_id)
+            if not rows:
+                self.send(chat_id, "Tidak ada tugas terjadwal. Minta saja dalam obrolan, "
+                                   "mis. \"kirim ringkasan berita AI tiap pagi jam 7\".")
+                return
+            lines = [f"#{r['id']} [{r['recurrence'] or 'sekali'}] "
+                     f"berikutnya {r['due_ts']} UTC\n   {r['prompt'][:150]}"
+                     for r in rows]
+            self.send(chat_id, "Tugas terjadwal:\n" + "\n".join(lines) +
+                      "\n\nBatalkan lewat obrolan atau /canceltask <id>.")
+
+        elif cmd == "/canceltask":
+            if not arg.strip().isdigit() or not self.store.set_task_status(
+                    int(arg.strip()), "cancelled"):
+                self.send(chat_id, "Pakai: /canceltask <id>  (lihat /tasks)")
+                return
+            self.send(chat_id, f"Tugas #{arg.strip()} dibatalkan.")
 
         elif cmd == "/skills":
             metas = skills.entries()

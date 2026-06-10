@@ -116,6 +116,24 @@ def tool_specs() -> list:
               {"due_at": {"type": "string"}, "message": {"type": "string"}},
               ["due_at", "message"]),
         _spec("list_reminders", "List the user's pending reminders."),
+        _spec("schedule_task",
+              "Schedule an AGENT TASK: at the given time you will actually "
+              "execute the prompt (with all your tools) and send the result to "
+              "the user — use for 'kirim analisis tiap pagi', 'cek harga X "
+              "tiap jam', 'buatkan laporan hari Senin'. Different from "
+              "schedule_reminder, which only sends a fixed text. due_at: ISO "
+              "8601 UTC. recurrence: once | hourly | daily | weekly | "
+              "every:<minutes>.",
+              {"prompt": {"type": "string",
+                          "description": "instruction your future self will execute"},
+               "due_at": {"type": "string", "description": "first run, ISO 8601 UTC"},
+               "recurrence": {"type": "string",
+                              "enum": ["once", "hourly", "daily", "weekly"],
+                              "description": "or 'every:<minutes>'"}},
+              ["prompt", "due_at"]),
+        _spec("list_tasks", "List the user's scheduled agent tasks."),
+        _spec("cancel_task", "Cancel a scheduled agent task by id.",
+              {"task_id": {"type": "integer"}}, ["task_id"]),
         _spec("web_search",
               "Search the web (DuckDuckGo). Returns titles, URLs and snippets. "
               "Use for anything recent or outside your knowledge.",
@@ -329,6 +347,37 @@ def _list_reminders(args, ctx):
     return "\n".join(f"#{r['id']} {r['due_ts']} — {r['message']}" for r in rows)
 
 
+def _schedule_task(args, ctx):
+    due = args["due_at"].strip().replace("z", "Z")
+    parsed = datetime.fromisoformat(due.replace("Z", "+00:00"))
+    if parsed <= datetime.now(timezone.utc):
+        return "ERROR: due_at is in the past."
+    recurrence = (args.get("recurrence") or "once").strip().lower()
+    if recurrence == "once":
+        recurrence = None
+    elif not (recurrence in ("hourly", "daily", "weekly")
+              or recurrence.startswith("every:")):
+        return f"ERROR: invalid recurrence '{recurrence}'"
+    tid = ctx.store.add_task(ctx.chat_id, args["prompt"],
+                             parsed.strftime("%Y-%m-%dT%H:%M:%SZ"), recurrence)
+    rec_label = recurrence or "once"
+    return f"Task #{tid} scheduled ({rec_label}), first run {due} UTC."
+
+
+def _list_tasks(args, ctx):
+    rows = ctx.store.active_tasks(ctx.chat_id)
+    if not rows:
+        return "No scheduled tasks."
+    return "\n".join(
+        f"#{r['id']} [{r['recurrence'] or 'once'}] next {r['due_ts']} — {r['prompt'][:120]}"
+        for r in rows)
+
+
+def _cancel_task(args, ctx):
+    ok = ctx.store.set_task_status(int(args["task_id"]), "cancelled")
+    return "Task cancelled." if ok else "ERROR: no such task."
+
+
 # ---------------- world-facing tools ----------------
 
 _UA = {"User-Agent": "Mozilla/5.0 (compatible; EngramAgent/0.1)"}
@@ -490,6 +539,9 @@ _HANDLERS = {
     "manage_goal": _manage_goal,
     "schedule_reminder": _schedule_reminder,
     "list_reminders": _list_reminders,
+    "schedule_task": _schedule_task,
+    "list_tasks": _list_tasks,
+    "cancel_task": _cancel_task,
     "web_search": _web_search,
     "fetch_url": _fetch_url,
     "calculate": _calculate,
