@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+engram.db
+engram.db-*
+.venv/
+venv/
