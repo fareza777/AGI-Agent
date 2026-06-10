@@ -73,6 +73,14 @@ ALLOWED_DIRS = [WORKSPACE_DIR] + [
     for p in os.environ.get("ENGRAM_ALLOWED_DIRS", "").split(",") if p.strip()
 ]
 
+# Vision: images the user sends (or view_image loads) are passed to the model
+# as base64. Cap raw size to stay under provider limits (~5MB at Anthropic).
+MAX_IMAGE_BYTES = 4_500_000
+
+# Live activity feed: stream compact "🔎 web_search: ..." lines to the chat
+# while the agent works. Set 0 to disable.
+SHOW_ACTIVITY = os.environ.get("ENGRAM_SHOW_ACTIVITY", "1") == "1"
+
 # The run_python tool executes model-written code on your machine. Off by
 # default; enable only if you trust everyone who can message the bot.
 ENABLE_CODE_TOOL = os.environ.get("ENGRAM_ENABLE_CODE_TOOL", "0") == "1"

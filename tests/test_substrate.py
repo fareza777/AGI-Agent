@@ -295,6 +295,76 @@ class InboxTests(unittest.TestCase):
         self.assertTrue(str(p1).startswith(str(config.WORKSPACE_DIR)))
 
 
+class VisionAndActivityTests(unittest.TestCase):
+    """view_image queues images, run_tool emits live-activity lines, and
+    encode_image enforces type/size limits."""
+
+    # 1x1 transparent PNG
+    PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00"
+           b"\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc"
+           b"\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_ws = config.WORKSPACE_DIR
+        self._orig_dirs = config.ALLOWED_DIRS
+        config.WORKSPACE_DIR = __import__("pathlib").Path(self.tmp).resolve()
+        config.ALLOWED_DIRS = [config.WORKSPACE_DIR]
+        fd, self.db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.db)
+
+    def tearDown(self):
+        import shutil
+        config.WORKSPACE_DIR = self._orig_ws
+        config.ALLOWED_DIRS = self._orig_dirs
+        shutil.rmtree(self.tmp)
+        self.store.close()
+        os.unlink(self.db)
+
+    def test_view_image_queues_pending(self):
+        (config.WORKSPACE_DIR / "inbox").mkdir(parents=True)
+        img = config.WORKSPACE_DIR / "inbox" / "photo.png"
+        img.write_bytes(self.PNG)
+        ctx = ToolContext(self.store, "c1")
+        out = run_tool("view_image", {"path": "inbox/photo.png"}, ctx)
+        self.assertIn("you can now see it", out)
+        self.assertEqual(ctx.pending_images, [str(img)])
+        # unsupported extension rejected
+        (config.WORKSPACE_DIR / "doc.txt").write_text("x")
+        self.assertIn("ERROR", run_tool("view_image", {"path": "doc.txt"}, ctx))
+
+    def test_encode_image(self):
+        from engram.llm import encode_image
+        img = config.WORKSPACE_DIR / "a.png"
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(self.PNG)
+        media_type, b64 = encode_image(str(img))
+        self.assertEqual(media_type, "image/png")
+        self.assertTrue(len(b64) > 0)
+        self.assertIsNone(encode_image(str(config.WORKSPACE_DIR / "missing.png")))
+        weird = config.WORKSPACE_DIR / "a.xyz"
+        weird.write_bytes(b"data")
+        self.assertIsNone(encode_image(str(weird)))
+
+    def test_activity_feed_emitted(self):
+        lines = []
+        ctx = ToolContext(self.store, "c1", activity=lines.append)
+        run_tool("calculate", {"expression": "2+2"}, ctx)
+        self.assertEqual(lines, ["🧮 calculate: 2+2"])
+        # a broken activity channel must not break the tool call
+        def boom(_): raise RuntimeError("net down")
+        ctx2 = ToolContext(self.store, "c1", activity=boom)
+        self.assertEqual(run_tool("calculate", {"expression": "1+1"}, ctx2), "2")
+
+    def test_format_activity_truncates(self):
+        from engram.tools import format_activity
+        line = format_activity("web_search", {"query": "x" * 200})
+        self.assertLessEqual(len(line), 110)
+        self.assertTrue(line.startswith("🔎 web_search: "))
+        self.assertEqual(format_activity("list_tasks", {}), "🗓 list_tasks")
+
+
 class LessonsInContextTests(unittest.TestCase):
     def setUp(self):
         fd, self.path = tempfile.mkstemp(suffix=".db")

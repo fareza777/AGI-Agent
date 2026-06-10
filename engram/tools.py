@@ -51,16 +51,28 @@ log = logging.getLogger("engram.tools")
 
 
 class ToolContext:
-    def __init__(self, store: Store, chat_id: str):
+    def __init__(self, store: Store, chat_id: str, activity=None):
         self.store = store
         self.chat_id = chat_id
         # Files the agent produced this turn; the interface delivers them.
         self.produced_files = []
+        # Images queued by view_image; the LLM loop attaches them to the next turn.
+        self.pending_images = []
+        # Optional callable(text): live activity feed shown in the chat.
+        self.activity = activity
 
     def deliver_file(self, path):
         p = str(path)
         if p not in self.produced_files:
             self.produced_files.append(p)
+
+    def emit_activity(self, text: str):
+        if self.activity is None:
+            return
+        try:
+            self.activity(text)
+        except Exception:
+            log.debug("activity feed delivery failed", exc_info=True)
 
 
 # ---------------- tool specs (Anthropic schema; converted for OpenAI-compat) ----------------
@@ -217,6 +229,12 @@ def tool_specs() -> list:
               "with write_file, or generated earlier).",
               {"path": {"type": "string"}}, ["path"]),
 
+        _spec("view_image",
+              "Look at an image file (photo the user sent to inbox/, a "
+              "screenshot, a chart). After calling this you will SEE the image "
+              "and can describe/analyze it. Supported: jpg, png, webp, gif.",
+              {"path": {"type": "string"}}, ["path"]),
+
         # ---- digital-assistant: repo inspection ----
         _spec("git",
               "Run a READ-ONLY git command on a repository in an allowed "
@@ -252,11 +270,41 @@ def openai_tool_specs() -> list:
 
 _GATED = {"run_python": "ENABLE_CODE_TOOL", "run_shell": "ENABLE_SHELL_TOOL"}
 
+_ICONS = {
+    "web_search": "🔎", "fetch_url": "🌐", "calculate": "🧮",
+    "recall": "🧠", "remember": "🧠", "belief_history": "🧠",
+    "manage_goal": "🎯",
+    "schedule_reminder": "⏰", "list_reminders": "⏰",
+    "schedule_task": "🗓", "list_tasks": "🗓", "cancel_task": "🗓",
+    "use_skill": "📚", "create_skill": "📚", "improve_skill": "📚",
+    "list_dir": "📁", "make_dir": "📁", "move_file": "📁",
+    "read_file": "📄", "write_file": "✍️", "delete_file": "🗑",
+    "search_files": "🔍", "create_document": "📝", "send_file": "📤",
+    "git": "🔧", "run_python": "🐍", "run_shell": "💻", "view_image": "👁",
+}
+# Most-informative arg to show, in priority order.
+_ARG_KEYS = ("query", "url", "path", "filename", "expression", "command",
+             "prompt", "name", "title", "message", "repo_path", "src", "subject")
+
+
+def format_activity(name: str, args: dict) -> str:
+    """One compact line for the live activity feed, e.g. '🔎 web_search: berita AI'."""
+    icon = _ICONS.get(name, "⚙️")
+    for key in _ARG_KEYS:
+        val = (args or {}).get(key)
+        if val:
+            val = str(val).replace("\n", " ").strip()
+            if len(val) > 80:
+                val = val[:77] + "…"
+            return f"{icon} {name}: {val}"
+    return f"{icon} {name}"
+
 
 def run_tool(name: str, args: dict, ctx: ToolContext) -> str:
     handler = _HANDLERS.get(name)
     if handler is None or (name in _GATED and not getattr(config, _GATED[name])):
         return f"ERROR: unknown tool '{name}'"
+    ctx.emit_activity(format_activity(name, args or {}))
     try:
         result = handler(args or {}, ctx)
     except Exception as exc:  # tool errors go back to the model, not up the stack
@@ -524,6 +572,20 @@ def _send_file(args, ctx):
     return f"Sending {desktop._rel(p)} to the user."
 
 
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+
+def _view_image(args, ctx):
+    p = desktop.resolve(args["path"], must_exist=True)
+    if p.suffix.lower() not in _IMAGE_EXTS:
+        return (f"ERROR: '{p.suffix}' is not a supported image type "
+                f"({', '.join(sorted(_IMAGE_EXTS))})")
+    if p.stat().st_size > config.MAX_IMAGE_BYTES:
+        return "ERROR: image too large to view (max ~4.5MB)"
+    ctx.pending_images.append(str(p))
+    return f"Image attached: {desktop._rel(p)} — you can now see it in this conversation."
+
+
 def _git(args, ctx):
     return desktop.git(args["repo_path"], args["command"])
 
@@ -557,6 +619,7 @@ _HANDLERS = {
     "search_files": _search_files,
     "create_document": _create_document,
     "send_file": _send_file,
+    "view_image": _view_image,
     "git": _git,
     "run_python": _run_python,
     "run_shell": _run_shell,

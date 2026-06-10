@@ -57,6 +57,9 @@ not shown here.
   delete_file: manage files in your workspace.
 - git: inspect a repository's state (status, log, diff) read-only.
 - send_file: deliver an existing workspace file to the user.
+- view_image: look at an image file (photo the user sent earlier, screenshot,
+  chart) — after calling it you SEE the image. Images the user sends in the
+  current message are already visible to you directly.
 Always confirm what you produced (filename + format) briefly after using these.
 
 ## How to format replies (Telegram)

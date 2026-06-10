@@ -73,6 +73,7 @@ why a Hermes/OpenClaw-style agent (flat text memory) can't replicate them:
 | Tool | What it does |
 |---|---|
 | `create_document` | Generate a real **docx / xlsx / pdf / md / html / csv** and send it to you over Telegram |
+| `view_image` | **Vision**: look at an image in the workspace (a photo you sent, a chart) and analyze it |
 | `read_file` / `write_file` / `list_dir` / `search_files` / `make_dir` / `move_file` / `delete_file` | Manage files in a sandboxed workspace |
 | `git` | Read-only repo inspection (status, log, diff, branch, …) |
 | `send_file` | Deliver any existing workspace file to your chat |
@@ -103,6 +104,17 @@ reasoning-models is stripped before it reaches you.
 in `workspace/inbox/` (sanitized filenames, deduped) and the agent is told
 about it in the same turn, so "ini notulen rapat, rapikan jadi minutes" works:
 it reads the file, processes it, and can send back a formatted document.
+
+**Vision:** photos you send are passed to the model as images in the same turn
+— "ini screenshot error-nya, kenapa ya?" just works. The `view_image` tool
+lets the agent look at any workspace image later. On OpenAI-compatible
+providers whose model lacks vision, the request automatically retries without
+the image instead of failing.
+
+**Live activity feed (Hermes-style):** while the agent works you see compact
+status lines in the chat — `🔎 web_search: berita AI`, `✍️ write_file:
+laporan.md`, `💻 run_shell: pip install …` — one per tool call, sent silently
+(no notification sound). Disable with `ENGRAM_SHOW_ACTIVITY=0`.
 
 **Learning loop (S10):** lessons distilled from corrections and failed tool
 calls become `lesson` claims, and the five most recent are *always* in the

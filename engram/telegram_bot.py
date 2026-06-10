@@ -93,6 +93,11 @@ class TelegramBot:
         self.store = agent.store
         self.token = config.TELEGRAM_BOT_TOKEN
         self.session = requests.Session()
+        # Delivery channels back into the agent (reminders, task results,
+        # live activity feed).
+        agent.notifier = self.send
+        agent.file_notifier = self.send_document
+        agent.activity_notifier = self.send_activity
 
     # ---------------- transport ----------------
 
@@ -107,8 +112,13 @@ class TelegramBot:
     def send(self, chat_id, text: str, rich: bool = True):
         """Send a message. rich=True renders model markdown as Telegram HTML
         (clean bullets, bold, code, flattened tables); falls back to plain text
-        if Telegram rejects the entities."""
-        body = telegram_format.to_telegram_html(text) if rich else text
+        if Telegram rejects the entities. rich=False sends plain text."""
+        if not rich:
+            for chunk in _split(text, MAX_MSG):
+                self._call("sendMessage", chat_id=chat_id, text=chunk,
+                           disable_web_page_preview=True)
+            return
+        body = telegram_format.to_telegram_html(text)
         for chunk in _split(body, MAX_MSG):
             try:
                 self._call("sendMessage", chat_id=chat_id, text=chunk,
@@ -119,6 +129,15 @@ class TelegramBot:
                 plain = next(iter(_split(text, MAX_MSG)), text[:MAX_MSG])
                 self._call("sendMessage", chat_id=chat_id, text=plain)
                 break
+
+    def send_activity(self, chat_id, text: str):
+        """One compact live-status line (🔎 web_search: ...). Best-effort —
+        never let the feed break the turn."""
+        try:
+            self._call("sendMessage", chat_id=chat_id, text=text[:200],
+                       disable_web_page_preview=True, disable_notification=True)
+        except Exception:
+            log.debug("activity line failed", exc_info=True)
 
     def send_document(self, chat_id, path: str):
         if not os.path.isfile(path):
@@ -166,7 +185,8 @@ class TelegramBot:
 
         # Incoming files (documents/photos) land in workspace/inbox and become
         # part of the turn, so the agent can read/process them immediately.
-        attachment_note = self._receive_attachments(chat_id, msg)
+        # Images are also attached to the model message (vision).
+        attachment_note, image_paths = self._receive_attachments(chat_id, msg)
         if attachment_note:
             text = f"{msg.get('caption', '').strip()}\n{attachment_note}".strip()
 
@@ -176,7 +196,7 @@ class TelegramBot:
             self._handle_command(chat_id, text)
         else:
             self._call("sendChatAction", chat_id=chat_id, action="typing")
-            reply, files = self.agent.handle_message(chat_id, text)
+            reply, files = self.agent.handle_message(chat_id, text, images=image_paths)
             self.send(chat_id, reply)
             for path in files:
                 self._call("sendChatAction", chat_id=chat_id, action="upload_document")
@@ -186,9 +206,12 @@ class TelegramBot:
 
     MAX_DOWNLOAD = 20 * 1024 * 1024  # Telegram bot API download cap
 
-    def _receive_attachments(self, chat_id: str, msg: dict) -> str:
+    IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+    def _receive_attachments(self, chat_id: str, msg: dict):
         """Download document/photo attachments into workspace/inbox.
-        Returns a note for the model describing what arrived ('' if none)."""
+        Returns (note_for_model, image_paths). Images are passed to the model
+        as vision input for this turn."""
         saved = []
         doc = msg.get("document")
         if doc:
@@ -204,13 +227,23 @@ class TelegramBot:
             if path:
                 saved.append(path)
         if not saved:
-            return ""
-        rel = [str(p.relative_to(config.WORKSPACE_DIR)) for p in saved]
-        return ("[Pengguna baru saja mengirim file, tersimpan di workspace: "
-                + ", ".join(rel)
-                + ". Gunakan read_file untuk file teks; file biner (gambar/pdf) "
-                  "bisa dikelola/dipindah tapi tidak bisa kamu baca isinya. "
-                  "Tanggapi sesuai konteks.]")
+            return "", []
+
+        images = [p for p in saved if p.suffix.lower() in self.IMAGE_EXTS]
+        others = [p for p in saved if p not in images]
+        rel = lambda p: str(p.relative_to(config.WORKSPACE_DIR))  # noqa: E731
+        notes = []
+        if images:
+            notes.append("[Pengguna mengirim gambar (terlampir di pesan ini — kamu "
+                         "BISA melihatnya): " + ", ".join(rel(p) for p in images)
+                         + ". Gambar juga tersimpan di workspace; gunakan view_image "
+                           "untuk melihatnya lagi nanti.]")
+        if others:
+            notes.append("[Pengguna mengirim file, tersimpan di workspace: "
+                         + ", ".join(rel(p) for p in others)
+                         + ". Gunakan read_file untuk file teks. Tanggapi sesuai "
+                           "konteks.]")
+        return "\n".join(notes), [str(p) for p in images]
 
     def _download(self, file_id: str, fallback_name: str, size):
         from . import desktop

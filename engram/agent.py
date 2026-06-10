@@ -20,19 +20,27 @@ class Agent:
         self._stop = threading.Event()
         self._bg_thread = None
         self._scheduler_thread = None
-        # Set by the interface (e.g. TelegramBot): callable(chat_id, text) and
-        # callable(chat_id, path). Used by the scheduler to deliver reminders
-        # and scheduled-task results/files.
+        # Set by the interface (e.g. TelegramBot):
+        #   notifier(chat_id, text)        — reminders & scheduled-task results
+        #   file_notifier(chat_id, path)   — files produced by scheduled tasks
+        #   activity_notifier(chat_id, text) — live "🔎 web_search: ..." feed
         self.notifier = None
         self.file_notifier = None
+        self.activity_notifier = None
 
     # ---------------- one chat turn ----------------
 
-    def handle_message(self, chat_id: str, user_text: str):
-        """Run one turn. Returns (reply_text, [produced_file_paths])."""
+    def handle_message(self, chat_id: str, user_text: str, images: list = None):
+        """Run one turn. Returns (reply_text, [produced_file_paths]).
+        images: paths of images attached to this turn (vision)."""
         self.store.log_event("user", "message", user_text, chat_id)
         system, messages = composer.build_context(self.store, chat_id, user_text)
-        ctx = ToolContext(self.store, chat_id)
+        if images:
+            messages[-1] = {"role": "user", "content": user_text, "images": images}
+        activity = None
+        if self.activity_notifier is not None and config.SHOW_ACTIVITY:
+            activity = lambda text: self.activity_notifier(chat_id, text)  # noqa: E731
+        ctx = ToolContext(self.store, chat_id, activity=activity)
         try:
             reply = llm.chat(system, messages, ctx=ctx)
         except Exception:
