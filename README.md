@@ -91,9 +91,19 @@ why a Hermes/OpenClaw-style agent (flat text memory) can't replicate them:
 
 **Safety:** all file/document tools are sandboxed to the workspace (plus any
 roots you opt into via `ENGRAM_ALLOWED_DIRS`); path traversal is blocked. `git`
-is read-only. Code/shell execution is opt-in. Document output degrades
-gracefully — without `python-docx`/`openpyxl`/`reportlab` installed you still
-get md/html/txt/csv and a clear "pip install" hint for the rest.
+is read-only. Code/shell execution is opt-in.
+
+**Document generation never fails on dependencies.** With
+`python-docx`/`openpyxl`/`reportlab` installed you get richly styled output;
+without them, built-in zero-dependency generators (`engram/docgen.py`) write
+valid docx/xlsx/pdf using only the standard library — plainer styling, but the
+file always arrives. `/doctor` shows which engine each format is using, plus
+provider/workspace/git health.
+
+**Honest tool reporting.** Tool failures surface as ❌ lines in the live
+activity feed, `create_document` verifies the file actually exists on disk
+before claiming success, and the system prompt hard-forbids telling you a file
+was sent unless the tool result confirmed it.
 
 **Clean Telegram output:** model replies are rendered to Telegram's HTML
 (tidy bullets, bold, code), markdown tables are flattened to readable lines

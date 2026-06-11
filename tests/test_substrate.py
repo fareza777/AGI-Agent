@@ -620,6 +620,65 @@ class DesktopTests(unittest.TestCase):
         self.assertTrue(p.exists() and p.stat().st_size > 0)
 
 
+class DocgenFallbackTests(unittest.TestCase):
+    """Zero-dependency docx/xlsx/pdf generators — valid files, no libraries."""
+
+    SECTIONS = [{"heading": "Ringkasan", "body": "Isi laporan & analisis <tes>"}]
+    TABLE = {"headers": ["Produk", "Unit"], "rows": [["A", "12"], ["B", "8"]]}
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.dir = __import__("pathlib").Path(self.tmp)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp)
+
+    def test_minimal_docx_is_valid_zip(self):
+        import zipfile
+        from engram import docgen
+        target = self.dir / "r.docx"
+        docgen.minimal_docx(target, "Laporan Tes", self.SECTIONS, self.TABLE)
+        with zipfile.ZipFile(target) as z:
+            names = set(z.namelist())
+            self.assertIn("word/document.xml", names)
+            self.assertIn("[Content_Types].xml", names)
+            doc = z.read("word/document.xml").decode()
+        self.assertIn("Laporan Tes", doc)
+        self.assertIn("&lt;tes&gt;", doc)        # XML-escaped
+        self.assertIn("<w:tbl>", doc)            # table rendered
+        self.assertIn("Produk", doc)
+
+    def test_minimal_xlsx_is_valid_zip(self):
+        import zipfile
+        from engram import docgen
+        target = self.dir / "d.xlsx"
+        docgen.minimal_xlsx(target, "Data", [], self.TABLE)
+        with zipfile.ZipFile(target) as z:
+            sheet = z.read("xl/worksheets/sheet1.xml").decode()
+            self.assertIn("xl/workbook.xml", set(z.namelist()))
+        self.assertIn("Produk", sheet)
+        self.assertIn("<v>12</v>", sheet)        # numbers as numeric cells
+
+    def test_minimal_pdf_structure(self):
+        from engram import docgen
+        target = self.dir / "r.pdf"
+        long_sections = [{"heading": f"Bagian {i}", "body": "kalimat panjang " * 40}
+                         for i in range(12)]                 # forces multi-page
+        docgen.minimal_pdf(target, "Laporan (PDF)", long_sections, self.TABLE)
+        data = target.read_bytes()
+        self.assertTrue(data.startswith(b"%PDF-1.4"))
+        self.assertTrue(data.rstrip().endswith(b"%%EOF"))
+        self.assertIn(rb"Laporan \(PDF\)", data)             # escaped parens
+        self.assertGreater(data.count(b"/Type /Page "), 1)   # paginated
+
+    def test_col_letter(self):
+        from engram.docgen import _col_letter
+        self.assertEqual(_col_letter(0), "A")
+        self.assertEqual(_col_letter(25), "Z")
+        self.assertEqual(_col_letter(26), "AA")
+
+
 class DocumentToolDeliveryTests(unittest.TestCase):
     """create_document must queue the file for delivery on the ToolContext."""
 
@@ -649,6 +708,22 @@ class DocumentToolDeliveryTests(unittest.TestCase):
         self.assertIn("sent to the user", out)
         self.assertEqual(len(ctx.produced_files), 1)
         self.assertTrue(ctx.produced_files[0].endswith("laporan.md"))
+
+    def test_create_document_accepts_stringified_args(self):
+        # Weaker models pass structured args as JSON strings — must still work.
+        ctx = ToolContext(self.store, "c1")
+        out = run_tool("create_document",
+                       {"filename": "rpt", "format": "docx", "title": "T",
+                        "sections": '[{"heading": "H", "body": "B"}]',
+                        "table": '{"headers": ["a"], "rows": [["1"]]}'}, ctx)
+        self.assertIn("sent to the user", out)
+        self.assertTrue(ctx.produced_files[0].endswith("rpt.docx"))
+
+    def test_failed_tool_shows_error_in_activity_feed(self):
+        lines = []
+        ctx = ToolContext(self.store, "c1", activity=lines.append)
+        run_tool("view_image", {"path": "tidak_ada.png"}, ctx)
+        self.assertTrue(any(l.startswith("❌ view_image:") for l in lines))
 
 
 if __name__ == "__main__":

@@ -310,6 +310,10 @@ def run_tool(name: str, args: dict, ctx: ToolContext) -> str:
     except Exception as exc:  # tool errors go back to the model, not up the stack
         log.exception("tool %s failed", name)
         result = f"ERROR: {type(exc).__name__}: {exc}"
+    if isinstance(result, str) and result.startswith("ERROR"):
+        # Surface failures in the live feed too — the user must never be told
+        # "sudah dikirim" while a ❌ was silently swallowed.
+        ctx.emit_activity(f"❌ {name}: {result[:120]}")
     ctx.store.log_event(
         "system", "tool",
         json.dumps({"tool": name, "args": args, "result": str(result)[:500]},
@@ -559,11 +563,26 @@ def _search_files(args, ctx):
 
 
 def _create_document(args, ctx):
+    sections = _coerce_json(args.get("sections", []), list)
+    table = _coerce_json(args.get("table"), dict)
     p = desktop.create_document(
         filename=args["filename"], doc_format=args["format"], title=args["title"],
-        sections=args.get("sections", []), table=args.get("table"))
+        sections=sections, table=table)
+    if not p.is_file() or p.stat().st_size == 0:
+        return "ERROR: document file was not created"
     ctx.deliver_file(p)
-    return f"Document created and sent to the user: {desktop._rel(p)}."
+    return (f"Document created and sent to the user: {desktop._rel(p)} "
+            f"({p.stat().st_size} bytes).")
+
+
+def _coerce_json(value, expected_type):
+    """Some models pass structured args as JSON strings — accept both."""
+    if isinstance(value, str) and value.strip():
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return expected_type()
+    return value if isinstance(value, expected_type) else expected_type()
 
 
 def _send_file(args, ctx):

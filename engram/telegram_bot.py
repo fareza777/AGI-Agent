@@ -79,6 +79,7 @@ Perintah:
 /skill <nama> — lihat isi satu skill
 /approve <nama> — aktifkan draft skill yang saya usulkan
 /reflect — paksa konsolidasi memori + refleksi + penambangan skill
+/doctor — cek kesehatan: provider, tools dokumen, workspace, git
 /identity — lihat identitas inti saya
 /stats — statistik memori
 
@@ -402,6 +403,9 @@ class TelegramBot:
                                  f"skill '{name}' approved", chat_id)
             self.send(chat_id, f"Skill '{name}' aktif. Saya akan memakainya mulai sekarang.")
 
+        elif cmd == "/doctor":
+            self.send(chat_id, self._doctor_report(), rich=False)
+
         elif cmd == "/identity":
             self.send(chat_id, identity.load())
 
@@ -416,3 +420,46 @@ class TelegramBot:
 
         else:
             self.send(chat_id, "Perintah tidak dikenal. /help untuk daftar perintah.")
+
+    # ---------------- diagnostics ----------------
+
+    def _doctor_report(self) -> str:
+        from . import desktop
+        import shutil as _shutil
+        lines = ["🩺 Engram Doctor", ""]
+        lines.append(f"Provider: {config.PROVIDER}")
+        lines.append(f"Model chat: {config.CHAT_MODEL or '(belum diset!)'}")
+        lines.append(f"Model konsolidasi: {config.CONSOLIDATE_MODEL or '(belum diset)'}")
+        if config.PROVIDER != "anthropic":
+            lines.append(f"Base URL: {config.OPENAI_BASE_URL or '(belum diset!)'}")
+            lines.append(f"API key: {'✅ ada' if config.LLM_API_KEY else '❌ KOSONG'}")
+        else:
+            lines.append(f"API key: {'✅ ada' if config.ANTHROPIC_API_KEY else '❌ KOSONG'}")
+        lines.append("")
+
+        caps = desktop.document_capabilities()
+        label = {"native": "✅ native", "builtin": "✅ builtin (tanpa library — "
+                                                  "hasil lebih polos)"}
+        lines.append("Dokumen:")
+        for fmt in ("docx", "xlsx", "pdf", "md", "html", "csv"):
+            lines.append(f"  {fmt}: {label[caps[fmt]]}")
+        builtin = [f for f in ("docx", "xlsx", "pdf") if caps[f] == "builtin"]
+        if builtin:
+            lines.append(f"  → untuk hasil maksimal: pip install "
+                         f"{' '.join({'docx': 'python-docx', 'xlsx': 'openpyxl', 'pdf': 'reportlab'}[f] for f in builtin)}")
+        lines.append("")
+
+        try:
+            desktop.ensure_workspace()
+            probe = desktop.write_file(".doctor_probe", "ok")
+            probe.unlink()
+            ws = f"✅ {config.WORKSPACE_DIR}"
+        except Exception as exc:
+            ws = f"❌ tidak bisa menulis: {exc}"
+        lines.append(f"Workspace: {ws}")
+        lines.append(f"Git: {'✅ terpasang' if _shutil.which('git') else '❌ tidak ada di PATH'}")
+        lines.append(f"Activity feed: {'aktif' if config.SHOW_ACTIVITY else 'mati'}")
+        lines.append(f"run_python: {'aktif' if config.ENABLE_CODE_TOOL else 'mati (default)'}")
+        lines.append(f"run_shell: {'aktif' if config.ENABLE_SHELL_TOOL else 'mati (default)'}")
+        lines.append(f"Event belum dikonsolidasi: {self.store.unprocessed_count()}")
+        return "\n".join(lines)

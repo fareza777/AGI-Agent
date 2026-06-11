@@ -45,6 +45,16 @@ def main() -> int:
             print(f"  - {p}")
         return 1
 
+    from engram import desktop
+    caps = desktop.document_capabilities()
+    builtin = [f for f in ("docx", "xlsx", "pdf") if caps[f] == "builtin"]
+    if builtin:
+        libs = {"docx": "python-docx", "xlsx": "openpyxl", "pdf": "reportlab"}
+        logging.getLogger("engram").info(
+            "document formats %s using built-in generators (works, plainer "
+            "styling); for richer output: pip install %s",
+            ", ".join(builtin), " ".join(libs[f] for f in builtin))
+
     agent = Agent()
     bot = TelegramBot(agent)   # wires notifier/file/activity channels itself
     agent.start_background()

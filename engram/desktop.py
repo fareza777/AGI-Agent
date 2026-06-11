@@ -266,8 +266,10 @@ def _build_docx(target, title, sections, table):
     try:
         from docx import Document
     except ImportError:
-        raise WorkspaceError(
-            "docx generation needs python-docx — run: pip install python-docx")
+        # Zero-dependency fallback — a valid .docx, just plainer styling.
+        from . import docgen
+        docgen.minimal_docx(target, title, sections, table)
+        return
     doc = Document()
     doc.add_heading(title, level=0)
     for s in sections:
@@ -293,8 +295,9 @@ def _build_xlsx(target, title, sections, table):
     try:
         from openpyxl import Workbook
     except ImportError:
-        raise WorkspaceError(
-            "xlsx generation needs openpyxl — run: pip install openpyxl")
+        from . import docgen
+        docgen.minimal_xlsx(target, title, sections, table)
+        return
     wb = Workbook()
     ws = wb.active
     ws.title = title[:31] or "Sheet1"
@@ -320,8 +323,9 @@ def _build_pdf(target, title, sections, table):
                                         Table, TableStyle)
         from reportlab.lib import colors
     except ImportError:
-        raise WorkspaceError(
-            "pdf generation needs reportlab — run: pip install reportlab")
+        from . import docgen
+        docgen.minimal_pdf(target, title, sections, table)
+        return
     styles = getSampleStyleSheet()
     flow = [Paragraph(_esc(title), styles["Title"]), Spacer(1, 12)]
     for s in sections:
@@ -348,6 +352,21 @@ _BUILDERS = {
     "csv": _build_csv, "html": _build_html, "docx": _build_docx,
     "xlsx": _build_xlsx, "pdf": _build_pdf,
 }
+
+_NATIVE_LIBS = {"docx": "docx", "xlsx": "openpyxl", "pdf": "reportlab"}
+
+
+def document_capabilities() -> dict:
+    """{format: 'native' | 'builtin'} — never 'unavailable': formats without
+    their rich library fall back to the zero-dependency builders in docgen."""
+    caps = {fmt: "native" for fmt in ("md", "html", "txt", "csv")}
+    for fmt, module in _NATIVE_LIBS.items():
+        try:
+            __import__(module)
+            caps[fmt] = "native"
+        except ImportError:
+            caps[fmt] = "builtin"
+    return caps
 
 
 # ---------------- git / repo inspection (read-only) ----------------
