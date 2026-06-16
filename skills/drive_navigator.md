@@ -1,6 +1,6 @@
 ---
 name: drive_navigator
-description: Browse, search, organize, and manage files across the full D: drive and G: (Google Drive) — finding documents, tidying folders, locating projects.
+description: Find, search, and manage files on D: drive or G: (Google Drive mirror) — listing folders, locating docs, navigating projects. USE WHEN: "cari file di D:", "ada di G:/My Drive mana", "tunjukkan isi folder X". NOT for workspace-only (→ file_organizer) or editing files (→ file_editor).
 status: active
 version: 1
 ---

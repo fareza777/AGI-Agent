@@ -1,6 +1,6 @@
 ---
 name: file_organizer
-description: Organize, rename, or clean up files in the workspace.
+description: Organize, rename, or tidy files inside the workspace folder. USE WHEN: "rapikan workspace", "rename file ini", "kategorikan file". NOT for D:/G:/ drives (→ drive_navigator) or editing content (→ file_editor).
 status: active
 version: 1
 ---

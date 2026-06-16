@@ -1,6 +1,6 @@
 ---
 name: summarizer
-description: Summarize documents, files, articles, or URLs into key points, decisions, and action items.
+description: Summarize a file, article, or URL into key points + decisions + action items. USE WHEN: "ringkas file ini", "rangkum URL ini", "apa isinya", "TL;DR". NOT for meeting transcript (→ meeting_notes) or web research (→ research_brief).
 status: active
 version: 1
 ---

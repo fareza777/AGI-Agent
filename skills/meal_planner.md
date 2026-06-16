@@ -1,6 +1,6 @@
 ---
 name: meal_planner
-description: Plan weekly menus, suggest recipes from available ingredients, and build grocery shopping lists.
+description: Plan weekly menus, suggest recipes from given ingredients, build grocery list. USE WHEN: "masak apa ya", "menu minggu ini", "resep dari bahan ini", "daftar belanja". NOT for restaurant reservations or travel food (→ travel_planner).
 status: active
 version: 1
 ---

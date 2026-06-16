@@ -1,6 +1,6 @@
 ---
 name: cv_resume
-description: Build or update a professional CV/resume as a polished docx tailored to a target role.
+description: Build/update a CV or resume as polished docx tailored to a target role. USE WHEN: "buatkan CV", "resume", "daftar riwayat hidup", "tailor untuk lowongan X". NOT for cover letters (→ email_drafter) or proposals (→ proposal_writer).
 status: active
 version: 1
 ---

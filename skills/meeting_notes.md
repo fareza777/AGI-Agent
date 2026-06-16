@@ -1,6 +1,6 @@
 ---
 name: meeting_notes
-description: Turn raw notes or a transcript into structured minutes with action items.
+description: Turn raw meeting notes or transcript into structured minutes with action items. USE WHEN: "buat notulen", "rangkum rapat", "ringkaskan transcript meeting". NOT for general summarization of files (→ summarizer).
 status: active
 version: 1
 ---

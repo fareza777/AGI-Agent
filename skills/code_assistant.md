@@ -1,6 +1,6 @@
 ---
 name: code_assistant
-description: Inspect, explain, and review code repositories on the local drives — repo status, diffs, code reading, bug hunting.
+description: Explain, debug, or review code — read files, trace errors, explain what functions do. USE WHEN: "jelasin kode ini", "kenapa error", "apa fungsi ini". NOT for git state (→ repo_review) or editing (→ file_editor).
 status: active
 version: 1
 ---

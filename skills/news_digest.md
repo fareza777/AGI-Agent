@@ -1,6 +1,6 @@
 ---
 name: news_digest
-description: Deliver news briefings on topics the user follows — on demand or as a scheduled daily/weekly digest.
+description: News briefing on topics the user follows, on demand or as a scheduled daily/weekly digest. USE WHEN: "berita apa hari ini", "update soal X", "kabarin tiap pagi". NOT for in-depth research (→ research_brief) or morning full briefing (→ daily_briefing).
 status: active
 version: 1
 ---

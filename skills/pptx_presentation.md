@@ -1,6 +1,6 @@
 ---
 name: pptx_presentation
-description: Create a clean, professional PowerPoint presentation (pptx) on any topic or from user data.
+description: PowerPoint deck (pptx) on any topic — 6–10 slides with title, content, table, closing. USE WHEN: "buatkan presentasi", "buat slide", "PPT tentang X", "deck untuk pitch". NOT for docx reports (→ docx_report).
 status: active
 version: 1
 ---

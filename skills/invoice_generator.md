@@ -1,6 +1,6 @@
 ---
 name: invoice_generator
-description: Generate invoices, kwitansi, or payment receipts as styled docx/pdf with itemized tables.
+description: Generate invoice, kwitansi, or payment receipt as styled docx/pdf with itemized table. USE WHEN: "buatkan invoice", "kwitansi untuk X", "tagihan ke klien", "buat nota". NOT for personal expense tracking (→ expense_tracker).
 status: active
 version: 1
 ---

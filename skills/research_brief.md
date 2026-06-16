@@ -1,6 +1,6 @@
 ---
 name: research_brief
-description: Research a topic on the web and deliver a short sourced brief.
+description: Web research with 1–3 queries + fetch top sources + short sourced brief. USE WHEN: "riset tentang X", "cari info soal Y", "apa yang terbaru tentang Z". NOT for routine news (→ news_digest) or when web_search is broken (→ web_research_with_fallback).
 ---
 # Research Brief
 

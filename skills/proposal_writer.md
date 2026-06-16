@@ -1,6 +1,6 @@
 ---
 name: proposal_writer
-description: Write business, project, or sponsorship proposals as structured professional documents.
+description: Business/project/sponsorship proposal as structured docx with budget table. USE WHEN: "buatkan proposal", "pengajuan dana", "proposal kerja sama". NOT for cover letters (→ email_drafter), CV (→ cv_resume), or general reports (→ docx_report).
 status: active
 version: 1
 ---

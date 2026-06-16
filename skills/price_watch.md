@@ -1,6 +1,6 @@
 ---
 name: price_watch
-description: Monitor prices, exchange rates, crypto, stock, or product availability and alert the user on changes or thresholds.
+description: Monitor prices (kurs, crypto, saham, produk) and alert on change or threshold. USE WHEN: "pantau harga X", "kabari kalau di bawah Y", "cek harga tiap hari". NOT for one-time price lookup — use web_search directly.
 status: active
 version: 1
 ---

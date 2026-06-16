@@ -1,6 +1,6 @@
 ---
 name: contact_crm
-description: Remember people in the user's life — names, roles, preferences, birthdays, last interactions — and recall them on demand.
+description: Track people in the user's life (colleagues, clients, family) and recall profiles. USE WHEN: "siapa X", "kapan terakhir bahas X", user mentions a person. NOT for tasks/appointments (→ task_manager).
 status: active
 version: 1
 ---

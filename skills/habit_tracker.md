@@ -1,6 +1,6 @@
 ---
 name: habit_tracker
-description: Track habits, streaks, and personal logs (olahraga, baca, berat badan) with check-in reminders and progress recaps.
+description: Track personal habits and streaks (olahraga, baca, berat badan) with check-in reminders. USE WHEN: "mau rutin olahraga", "catat berat badan", "streak baca", "gimana progress". NOT for tasks/deadlines (→ task_manager).
 status: active
 version: 1
 ---

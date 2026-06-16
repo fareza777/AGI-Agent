@@ -1,6 +1,6 @@
 ---
 name: daily_briefing
-description: Compile a personalized daily briefing from memory, goals, and the web.
+description: Personalized morning briefing — goals, reminders, news on followed topics, all in one chat message. USE WHEN: "briefing pagi", "apa agenda hari ini", "ringkasan hari ini". NOT for raw news (→ news_digest) or weekly (→ weekly_review).
 status: active
 version: 1
 ---

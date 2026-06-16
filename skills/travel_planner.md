@@ -1,6 +1,6 @@
 ---
 name: travel_planner
-description: Plan trips — research destinations, build day-by-day itineraries, budgets, and packing lists.
+description: Trip planning — research destination, build day-by-day itinerary, budget, packing list. USE WHEN: "mau ke Bali", "rencana liburan ke X", "itinerary 5 hari". NOT for flight/hotel booking transactions.
 status: active
 version: 1
 ---

@@ -1,6 +1,6 @@
 ---
 name: repo_review
-description: Inspect a git repository's state and summarize it for the user.
+description: Summarize a git repo's state — branch, uncommitted changes, recent commits, what looks unfinished. USE WHEN: "cek repo", "status repo X", "ada apa di branch Y", "ringkasan log terbaru". NOT for explaining code (→ code_assistant) or editing (→ file_editor).
 status: active
 version: 1
 ---

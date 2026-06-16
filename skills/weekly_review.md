@@ -1,6 +1,6 @@
 ---
 name: weekly_review
-description: Run a structured weekly review of the user's goals, beliefs, and recent activity.
+description: Structured weekly review — goals progress, lessons, suggested next steps. USE WHEN: "review mingguan", "gimana minggu ini", "rekap minggu ini". NOT for daily briefing (→ daily_briefing) or news (→ news_digest).
 ---
 # Weekly Review
 

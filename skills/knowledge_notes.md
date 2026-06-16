@@ -1,6 +1,6 @@
 ---
 name: knowledge_notes
-description: Maintain the user's personal notes and knowledge base — capture ideas, save references, retrieve them later.
+description: Personal notes and knowledge base — save ideas, web captures, references; retrieve later. USE WHEN: "catat ini", "simpan ide", "mana catatanku tentang X", "simpan artikel ini". NOT for tasks (→ task_manager) or facts-about-the-user (→ remember tool).
 status: active
 version: 1
 ---

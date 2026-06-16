@@ -1,6 +1,6 @@
 ---
 name: study_coach
-description: Teach topics, build study plans, quiz the user, and run spaced-repetition reviews for anything they're learning.
+description: Teach a topic, build a study plan, quiz the user, run spaced-repetition reviews. USE WHEN: "ajarin aku X", "bantu siapin ujian", "tes aku", "rencana belajar". NOT for research summary (→ research_brief) or general Q&A.
 status: active
 version: 1
 ---

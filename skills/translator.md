@@ -1,6 +1,6 @@
 ---
 name: translator
-description: Translate text, documents, or web pages between Indonesian, English, and other languages.
+description: Translate text, documents, or web pages between Indonesian, English, and others. USE WHEN: "terjemahkan", "translate", "alihbahasakan". Keeps tone, formatting, proper nouns. NOT for rewriting in same language (→ docx_report).
 status: active
 version: 1
 ---

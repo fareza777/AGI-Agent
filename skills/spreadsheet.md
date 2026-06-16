@@ -1,6 +1,6 @@
 ---
 name: spreadsheet
-description: Build a styled Excel workbook (xlsx/csv) from data the user provides or you collect.
+description: Build a styled xlsx (or csv) workbook from user data — header row, formulas-ready numbers, styled. USE WHEN: "buatkan spreadsheet", "tabel xlsx", "export ke Excel", "tracker tabel". NOT for analyzing numbers (→ data_analyst) or building docx tables.
 status: active
 version: 2
 ---

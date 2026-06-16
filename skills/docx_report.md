@@ -1,6 +1,6 @@
 ---
 name: docx_report
-description: Produce a polished, professionally formatted report document (docx/pdf) from a topic or data.
+description: Generic long-form report (laporan, makalah, white paper) as polished docx or pdf. USE WHEN: "buatkan laporan", "tulis makalah tentang X", "buatkan paper". NOT for letters (→ official_letter), CV (→ cv_resume), or proposals (→ proposal_writer).
 status: active
 version: 2
 ---

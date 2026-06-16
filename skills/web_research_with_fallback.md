@@ -1,7 +1,7 @@
 ---
 name: web_research_with_fallback
-description: Research a topic on the web when web_search is broken (SSL/timeout) by falling back to direct fetch_url on known authoritative sources.
-status: draft
+description: Web research FALLBACK — use when web_search fails (SSL/timeout) by fetching authoritative sources directly. USE WHEN: web_search returned SSL/network error. NOT for normal research (→ research_brief).
+status: active
 version: 1
 ---
 1. Attempt `web_search` once with a clear, specific query.

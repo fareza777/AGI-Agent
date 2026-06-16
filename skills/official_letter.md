@@ -1,6 +1,6 @@
 ---
 name: official_letter
-description: Compose formal Indonesian letters (surat lamaran, surat izin, surat pengunduran diri, surat penawaran, surat kuasa) as polished docx.
+description: Formal Indonesian letters with standard anatomy (surat lamaran, izin, pengunduran diri, penawaran, kuasa) as docx. USE WHEN: "buatkan surat lamaran", "surat izin", "surat pengunduran diri", "surat kuasa". NOT for emails (→ email_drafter) or full proposals (→ proposal_writer).
 status: active
 version: 1
 ---

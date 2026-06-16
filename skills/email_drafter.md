@@ -1,6 +1,6 @@
 ---
 name: email_drafter
-description: Draft emails and messages (formal/casual, Indonesian/English) ready to copy-paste or send.
+description: Draft emails, chat messages, or short replies in formal/casual tone. USE WHEN: "buatkan email", "draft balasan", "tolong tulis pesan". NOT for formal letters with kop surat (→ official_letter) or full proposals (→ proposal_writer).
 status: active
 version: 1
 ---

@@ -1,6 +1,6 @@
 ---
 name: data_analyst
-description: Analyze tabular data (CSV or pasted numbers) — totals, trends, comparisons — and deliver insight reports with styled tables.
+description: Analyze numbers — totals, trends, comparisons, outliers, and the story behind them. USE WHEN: "analisa data ini", "hitung dari CSV", "apa insightnya", "trennya gimana". NOT for just building an xlsx (→ spreadsheet).
 status: active
 version: 1
 ---

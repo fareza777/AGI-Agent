@@ -1,6 +1,6 @@
 ---
 name: image_analyzer
-description: Analyze photos and images the user sends — read documents/receipts, describe screenshots, extract text or data from pictures.
+description: Look at images the user sends (photos, screenshots, struk, charts) and read/analyze them. USE WHEN: user attaches a photo, "lihat gambar ini", "baca struk", "apa isi screenshot ini". NOT for generating images or charts.
 status: active
 version: 1
 ---

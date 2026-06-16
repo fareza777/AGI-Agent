@@ -1,6 +1,6 @@
 ---
 name: task_manager
-description: Manage the user's tasks, goals, deadlines, and reminders — capture, prioritize, follow through.
+description: Capture tasks, goals, deadlines, reminders; list/prioritize; follow through. USE WHEN: "tugasku", "ingetin aku besok", "todo", "agenda", "target bulan ini". NOT for morning briefing (→ daily_briefing) or habits/streaks (→ habit_tracker).
 status: active
 version: 1
 ---

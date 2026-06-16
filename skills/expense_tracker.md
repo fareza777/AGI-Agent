@@ -1,6 +1,6 @@
 ---
 name: expense_tracker
-description: Track the user's income and expenses in a persistent ledger and produce monthly financial recaps.
+description: Personal finance ledger — log income/expenses, monthly recap, budget tracking. USE WHEN: "catat pengeluaran", "gajian", "rekap bulan ini", "berapa habis bulan lalu". NOT for invoices (→ invoice_generator).
 status: active
 version: 1
 ---
