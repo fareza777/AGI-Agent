@@ -7,3 +7,4 @@ engram.db-*
 venv/
 workspace/
 skills/history/
+engram.pid

@@ -140,16 +140,25 @@ class TelegramBot:
         except Exception:
             log.debug("activity line failed", exc_info=True)
 
-    def send_document(self, chat_id, path: str):
+    def send_document(self, chat_id, path: str) -> bool:
+        """Upload a workspace file. Returns True on success."""
         if not os.path.isfile(path):
-            return
+            log.warning("sendDocument skipped — not a file: %s", path)
+            return False
         url = API.format(token=self.token, method="sendDocument")
-        with open(path, "rb") as fh:
-            resp = self.session.post(
-                url, data={"chat_id": chat_id},
-                files={"document": (os.path.basename(path), fh)}, timeout=120)
-        if not resp.json().get("ok"):
-            log.warning("sendDocument failed for %s: %s", path, resp.text[:200])
+        try:
+            with open(path, "rb") as fh:
+                resp = self.session.post(
+                    url, data={"chat_id": chat_id},
+                    files={"document": (os.path.basename(path), fh)}, timeout=120)
+            data = resp.json()
+            if not data.get("ok"):
+                log.warning("sendDocument failed for %s: %s", path, resp.text[:200])
+                return False
+            return True
+        except Exception:
+            log.exception("sendDocument failed for %s", path)
+            return False
 
     # ---------------- main loop ----------------
 
@@ -172,6 +181,14 @@ class TelegramBot:
                     self._handle_update(upd)
                 except Exception:
                     log.exception("failed to handle update %s", upd.get("update_id"))
+                    chat_id = str((upd.get("message") or {}).get("chat", {}).get("id", ""))
+                    if chat_id:
+                        try:
+                            self.send(chat_id,
+                                      "⚠️ Error internal — pesan tidak diproses. "
+                                      "Coba kirim lagi.", rich=False)
+                        except Exception:
+                            log.debug("could not notify user of handler error", exc_info=True)
 
     def _handle_update(self, upd: dict):
         msg = upd.get("message") or {}
@@ -199,9 +216,17 @@ class TelegramBot:
             self._call("sendChatAction", chat_id=chat_id, action="typing")
             reply, files = self.agent.handle_message(chat_id, text, images=image_paths)
             self.send(chat_id, reply)
+            failed = []
             for path in files:
                 self._call("sendChatAction", chat_id=chat_id, action="upload_document")
-                self.send_document(chat_id, path)
+                if not self.send_document(chat_id, path):
+                    failed.append(os.path.basename(path))
+            if failed:
+                self.send(chat_id,
+                          "⚠️ Gagal kirim file ke Telegram: "
+                          + ", ".join(failed)
+                          + "\nFile masih ada di workspace — minta kirim ulang "
+                            "dengan send_file.")
 
     # ---------------- incoming files ----------------
 

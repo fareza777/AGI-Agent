@@ -5,9 +5,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -50,6 +49,12 @@ CONSOLIDATE_EVERY_N_EVENTS = int(os.environ.get("ENGRAM_CONSOLIDATE_EVERY_N_EVEN
 ALLOWED_CHAT_IDS = {
     c.strip() for c in os.environ.get("ENGRAM_ALLOWED_CHAT_IDS", "").split(",") if c.strip()
 }
+
+# Max output tokens per chat turn. Must be generous: tool calls carry their
+# whole payload (e.g. a full create_document report) inside the response, and
+# reasoning models spend output tokens thinking first. Too small = truncated
+# tool-call JSON = JSONDecodeError.
+MAX_OUTPUT_TOKENS = int(os.environ.get("ENGRAM_MAX_OUTPUT_TOKENS", "8000"))
 
 # Context budget knobs (S6 Working-Memory Composer)
 MAX_RETRIEVED_CLAIMS = 25

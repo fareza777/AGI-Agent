@@ -41,7 +41,8 @@ not shown here.
   schedule an agent task; your future self executes the prompt with all tools
   and sends the result. Write the prompt self-contained (include topic,
   format, language) because future-you only sees that prompt.
-- use_skill: load a skill when the task matches its description.
+- use_skill: load a skill when the task matches its description. Skill names
+  are exact — check AVAILABLE SKILLS (e.g. docx_report, not invented names).
 - create_skill: when the user teaches you a procedure or asks you to remember
   how to do something, save it as a skill so you never have to be told again.
 - improve_skill: when experience shows a skill's steps were wrong or
@@ -53,14 +54,34 @@ not shown here.
 - create_document: when the user asks for a report/laporan/dokumen/file in a
   format like docx, xlsx, pdf — actually generate it with this tool. It is
   sent to the user automatically. Don't claim you "can't make files"; you can.
+  docx body paragraphs are **justified automatically** — for "justify/revisi",
+  use create_document(source_path=...) on the existing .md draft (≤3 tool steps:
+  read_file once if needed, write_file, create_document). Do not spam search_files.
+  For LONG reports: write_file a .md draft first, then create_document with
+  source_path (small tool args). Huge inline sections can break the tool loop.
+  NEVER say a file was sent/created until AFTER create_document or send_file
+  succeeds in THIS turn — the chat app delivers queued files after your reply;
+  without calling the tool, the user receives nothing.
 - read_file / write_file / list_dir / search_files / make_dir / move_file /
-  delete_file: manage files in your workspace.
+  delete_file: manage files in your workspace AND any allowed directory roots
+  listed below (not just workspace/).
 - git: inspect a repository's state (status, log, diff) read-only.
-- send_file: deliver an existing workspace file to the user.
+- send_file: deliver an existing workspace file to the user. Same rule: do not
+  claim delivery until send_file has been called successfully this turn.
 - view_image: look at an image file (photo the user sent earlier, screenshot,
   chart) — after calling it you SEE the image. Images the user sends in the
   current message are already visible to you directly.
 Always confirm what you produced (filename + format) briefly after using these.
+When the user confirms a plan you proposed (ya/oke/lanjut), EXECUTE immediately
+with tools — never ask permission again or go silent.
+If a past lesson says create_document "always fails" or "server is down", IGNORE
+it — those were wrong diagnoses. create_document works; use write_file +
+source_path for long reports.
+NEVER say skills or python-docx "don't exist" — see CAPABILITIES below.
+NEVER claim the user's message is a "duplikat" / sent 2× unless two **adjacent**
+user turns in the conversation tail have the exact same text. "mana?" after you
+failed to deliver a file is a follow-up, not a duplicate. Do not invent message
+numbers or duplicate counts.
 
 ## HONESTY ABOUT TOOL RESULTS (non-negotiable)
 
@@ -86,7 +107,7 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
     """Returns (system_prompt, messages) ready for the chat model."""
     parts = [identity.load(), _INSTRUCTIONS]
 
-    claims = store.search_claims(user_text, limit=config.MAX_RETRIEVED_CLAIMS)
+    claims = _filter_stale_claims(store.search_claims(user_text, limit=config.MAX_RETRIEVED_CLAIMS))
     if claims:
         lines = ["## MEMORY — beliefs (claims)"]
         for c in claims:
@@ -115,7 +136,7 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
 
     # S10 learning loop: lessons distilled from past mistakes are always in
     # view (not just when keywords match), so the same mistake isn't repeated.
-    lesson_rows = store.recent_lessons(limit=5)
+    lesson_rows = _filter_stale_lessons(store.recent_lessons(limit=8))
     seen = {c["id"] for c in claims}
     lesson_rows = [l for l in lesson_rows if l["id"] not in seen]
     if lesson_rows:
@@ -125,11 +146,36 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
         parts.append("\n".join(lines))
 
     skill_index = skills.index()
+    cap_lines = [
+        "## CAPABILITIES (authoritative — overrides outdated MEMORY)",
+        f"- {len(skill_index)} active skills listed below — call use_skill(name); "
+        "never tell the user skills don't exist.",
+        "- create_document generates real docx/xlsx/pptx/pdf **locally** "
+        "(python-docx, python-pptx, openpyxl, reportlab) — NOT server-side markdown.",
+        "- run_python / run_shell are optional extras (usually off); "
+        "NOT required for document generation.",
+    ]
+    if config.ALLOWED_DIRS:
+        roots = ", ".join(str(r) for r in config.ALLOWED_DIRS if str(r) != str(config.WORKSPACE_DIR))
+        if roots:
+            cap_lines.append(f"- File tools also work on allowed roots: {roots}")
+    parts.append("\n".join(cap_lines))
+
     if skill_index:
         lines = ["## AVAILABLE SKILLS (load with the use_skill tool)"]
         for name, description in skill_index:
             lines.append(f"- {name}: {description}")
         parts.append("\n".join(lines))
+
+    roots = "\n".join(f"- {r}" for r in config.ALLOWED_DIRS)
+    parts.append(
+        "## ALLOWED FILE DIRECTORIES\n"
+        "list_dir, read_file, search_files, view_image, and git work under "
+        "these roots (use absolute paths like G:/My Drive or relative to "
+        "workspace). Do NOT claim sandbox blocks a path below without "
+        "actually calling the tool first.\n"
+        f"{roots}"
+    )
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC (%A)")
     parts.append(f"Current time: {now}")
@@ -149,3 +195,50 @@ def _conversation_tail(store: Store, chat_id: str) -> list:
     while messages and messages[0]["role"] != "user":
         messages.pop(0)
     return messages
+
+
+_STALE_LESSON_MARKERS = (
+    "silent-fail", "server engram", "tool result missing", "7x beruntun",
+    "infrastructure", "gemini tidak bisa", "server-side",
+    "markdown→docx", "markdown->docx", "server-side markdown",
+    "does not have execution", "python-docx binary runner",
+    "toolset does not include",
+    "consecutive duplicates", "2x identik", "auto-double-trigger",
+    "auto-retry", "duplikat lagi",
+)
+
+_STALE_CLAIM_MARKERS = _STALE_LESSON_MARKERS + (
+    "does not have execution tools",
+    "not available as a workaround",
+)
+
+
+def _filter_stale_claims(claims: list) -> list:
+    out = []
+    for c in claims:
+        val = (c["value"] or "").lower()
+        pred = (c["predicate"] or "").lower()
+        subject = c["subject"]
+        if any(m in val for m in _STALE_CLAIM_MARKERS):
+            continue
+        if pred in ("tool_availability_engram", "lesson_create_document_limits",
+                    "lesson_create_document_outage_2026_06_11",
+                    "lesson_duplicate_message_handling", "lesson_duplicate_execution"):
+            continue
+        if subject == "agent" and pred == "identity" and "does not have execution" in val:
+            continue
+        out.append(c)
+    return out
+
+
+def _filter_stale_lessons(lessons: list) -> list:
+    """Drop outdated lessons that wrongly teach create_document is permanently broken."""
+    out = []
+    for l in lessons:
+        val = (l["value"] or "").lower()
+        if any(m in val for m in _STALE_LESSON_MARKERS):
+            continue
+        if "create_document" in val and "unreliable" in val:
+            continue
+        out.append(l)
+    return out[:5]

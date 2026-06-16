@@ -7,7 +7,9 @@ Usage:
     python run.py
 """
 
+import atexit
 import logging
+import os
 import sys
 
 from engram import config
@@ -19,8 +21,47 @@ logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
 
+_PID_FILE = config.PROJECT_ROOT / "engram.pid"
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _acquire_single_instance() -> None:
+    """Refuse to start if another Engram run.py is already alive."""
+    if _PID_FILE.exists():
+        try:
+            old = int(_PID_FILE.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            old = 0
+        if _pid_alive(old):
+            print(
+                f"Another Engram instance is already running (PID {old}).\n"
+                "Stop it first, or run start_engram.bat to restart cleanly."
+            )
+            sys.exit(1)
+    _PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    atexit.register(lambda: _PID_FILE.unlink(missing_ok=True))
+
 
 def main() -> int:
+    _acquire_single_instance()
     problems = []
     if not config.TELEGRAM_BOT_TOKEN:
         problems.append("TELEGRAM_BOT_TOKEN is not set")

@@ -3,6 +3,8 @@ and runs the background "sleep cycle" thread.
 """
 
 import logging
+import os
+import re
 import threading
 import time
 
@@ -12,6 +14,100 @@ from .store import Store
 from .tools import ToolContext
 
 log = logging.getLogger("engram.agent")
+
+# Reply patterns that imply a file was delivered without checking produced_files.
+_FILE_SENT_RE = re.compile(
+    r"(sudah\s+(di)?kirim|file\s+sudah|cek\s+telegram|"
+    r"telah\s+dikirim|already\s+sent|sent\s+(the|your|\d+|two|2)\s+file|"
+    r"\d+\s+file\s+sudah)",
+    re.I)
+_FILE_FMT_RE = re.compile(r"\.(docx|pptx|xlsx|pdf|csv|md|html)\b", re.I)
+_CONFIRM_RE = re.compile(
+    r"^(ya|yes|oke|ok|lanjut|silakan|gas|betul|setuju|mau|iyaa?)[\s!.?]*$", re.I)
+_FILE_TASK_RE = re.compile(
+    r"(buat|bikin|kirim|laporan|docx|word|ppt|pptx|justify|revisi|file|dokumen)",
+    re.I)
+_WHERE_FILE_RE = re.compile(
+    r"^(mana|dimana|where)\??$|belum (masuk|terlihat|ada)|gak ada|kok belum",
+    re.I)
+_STALL_REPLY_RE = re.compile(
+    r"(model hanya mengembalikan reasoning|mau lanjut dengan format|"
+    r"sebelum aku coba lagi|server engram|silent-fail|7x beruntun)",
+    re.I)
+
+_EXECUTION_NUDGE = (
+    "\n\n[INSTRUKSI SISTEM: Wajib eksekusi tool di giliran ini — write_file, "
+    "create_document(source_path=...) untuk docx/pptx, send_file. "
+    "Dilarang hanya menjelaskan, minta izin lagi, atau mengutip kegagalan lama.]"
+)
+
+
+def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
+    """Push the model to call tools when the user wants files or confirmed a plan."""
+    tail = store.recent_events(chat_id, config.CONVERSATION_TAIL)
+    prev_assistant = next(
+        (e["content"] for e in reversed(tail) if e["actor"] == "agent"), "")
+    is_confirm = bool(_CONFIRM_RE.match(user_text.strip()))
+    proposed = bool(re.search(
+        r"(write_file|send_file|create_document|\.md|\.docx|\.pptx|alternatif)",
+        prev_assistant, re.I))
+    if is_confirm and proposed:
+        return user_text + _EXECUTION_NUDGE
+    if _FILE_TASK_RE.search(user_text) or _WHERE_FILE_RE.search(user_text.strip()):
+        return user_text + _EXECUTION_NUDGE
+    return user_text
+
+
+def _should_retry_for_tools(reply: str, user_text: str, ctx: ToolContext) -> bool:
+    if ctx.file_tools_called or ctx.produced_files:
+        return False
+    if not _FILE_TASK_RE.search(user_text) and not _CONFIRM_RE.match(user_text.strip()):
+        return False
+    return bool(_STALL_REPLY_RE.search(reply)) or reply.startswith("(")
+
+
+def _user_expects_files(user_text: str, store: Store, chat_id: str) -> bool:
+    """True when this turn should produce/deliver files — not casual chat."""
+    text = (user_text or "").strip()
+    if _FILE_TASK_RE.search(text):
+        return True
+    if _WHERE_FILE_RE.search(text):
+        return True
+    if not _CONFIRM_RE.match(text):
+        return False
+    tail = store.recent_events(chat_id, 4)
+    prev = next((e["content"] for e in reversed(tail) if e["actor"] == "agent"), "")
+    return bool(re.search(
+        r"(write_file|send_file|create_document|\.docx|\.pptx|laporan|kirim|file)",
+        prev, re.I))
+
+
+def _guard_file_claims(reply: str, ctx: ToolContext,
+                      user_text: str = "", store: Store = None, chat_id: str = "") -> str:
+    """Append a correction when the model claims files were sent but none were
+    queued — only on turns where the user expected a deliverable."""
+    if ctx.produced_files:
+        return reply
+    if store is None or not _user_expects_files(user_text, store, chat_id):
+        return reply
+    if ctx.file_tools_called:
+        return (f"{reply}\n\n"
+                "⚠️ Catatan sistem: tool dokumen dipanggil tapi tidak ada file "
+                "yang ter-queue. Pembuatan/pengiriman mungkin gagal — coba lagi "
+                "atau minta format lain.")
+    claims_sent = bool(_FILE_SENT_RE.search(reply))
+    # Strong "I just sent it now" phrasing — not a past-tense status recap.
+    claims_now = bool(re.search(
+        r"(cek\s+telegram|baru\s+(saja\s+)?(di)?kirim|"
+        r"\d+\s+file\s+sudah\s+dikirim|sudah\s+jalan.*kirim|"
+        r"log internal|status success di log)",
+        reply, re.I))
+    if not claims_sent and not claims_now:
+        return reply
+    return (f"{reply}\n\n"
+            "⚠️ Catatan sistem: tidak ada file yang dibuat/dikirim pada giliran "
+            "ini (create_document/send_file tidak dipanggil). File belum sampai "
+            "ke chat — minta saya buat/kirim ulang; kali ini saya wajib pakai tool.")
 
 
 class Agent:
@@ -34,20 +130,30 @@ class Agent:
         """Run one turn. Returns (reply_text, [produced_file_paths]).
         images: paths of images attached to this turn (vision)."""
         self.store.log_event("user", "message", user_text, chat_id)
-        system, messages = composer.build_context(self.store, chat_id, user_text)
+        nudged = _inject_execution_nudge(user_text, self.store, chat_id)
+        system, messages = composer.build_context(self.store, chat_id, nudged)
         if images:
-            messages[-1] = {"role": "user", "content": user_text, "images": images}
+            messages[-1] = {"role": "user", "content": nudged, "images": images}
         activity = None
         if self.activity_notifier is not None and config.SHOW_ACTIVITY:
             activity = lambda text: self.activity_notifier(chat_id, text)  # noqa: E731
-        ctx = ToolContext(self.store, chat_id, activity=activity)
+        file_cb = None
+        if self.file_notifier is not None:
+            file_cb = lambda p: self.file_notifier(chat_id, p)  # noqa: E731
+        ctx = ToolContext(self.store, chat_id, activity=activity, file_notifier=file_cb)
         try:
             reply = llm.chat(system, messages, ctx=ctx)
+            if _should_retry_for_tools(reply, user_text, ctx):
+                log.info("stall detected on file task — retrying with execution nudge")
+                messages.append({"role": "assistant", "content": reply})
+                messages.append({"role": "user", "content": _EXECUTION_NUDGE.strip()})
+                reply = llm.chat(system, messages, ctx=ctx)
         except Exception as exc:
             log.exception("chat model call failed")
             reply = f"⚠️ Gagal: {llm.describe_error(exc)}."
             if ctx.produced_files:
                 reply += ("\nFile yang sempat dibuat tetap saya kirim di bawah.")
+        reply = _guard_file_claims(reply, ctx, user_text, self.store, chat_id)
         self.store.log_event("agent", "message", reply, chat_id)
 
         # Inline trigger: consolidate when enough raw experience has piled up,
@@ -55,7 +161,7 @@ class Agent:
         if self.store.unprocessed_count() >= config.CONSOLIDATE_EVERY_N_EVENTS:
             threading.Thread(target=self._safe_consolidate, daemon=True).start()
 
-        return reply, ctx.produced_files
+        return reply, [p for p in ctx.produced_files if p not in ctx.delivered_files]
 
     # ---------------- background sleep cycle ----------------
 
@@ -97,8 +203,14 @@ class Agent:
                 f"hasilnya] {task['prompt']}")
             self.notifier(task["chat_id"], f"🤖 Tugas terjadwal #{task['id']}:\n\n{reply}")
             if self.file_notifier:
+                failed = []
                 for path in files:
-                    self.file_notifier(task["chat_id"], path)
+                    if not self.file_notifier(task["chat_id"], path):
+                        failed.append(os.path.basename(path))
+                if failed:
+                    self.notifier(
+                        task["chat_id"],
+                        "⚠️ Gagal kirim file: " + ", ".join(failed))
         except Exception:
             log.exception("scheduled task #%s failed; will retry next tick", task["id"])
             return

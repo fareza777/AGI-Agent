@@ -8,4 +8,5 @@ python-dotenv>=1.0.0
 # pip install the missing one when you ask for docx/xlsx/pdf.
 python-docx>=1.1.0
 openpyxl>=3.1.0
+python-pptx>=1.0.0
 reportlab>=4.0.0

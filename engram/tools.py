@@ -13,7 +13,7 @@ is flat text):
 Digital-assistant (do things, not just answer — sandboxed to config.ALLOWED_DIRS):
   list_dir / read_file / write_file / make_dir / move_file / delete_file /
   search_files — workspace file management
-  create_document — generate docx/xlsx/pdf/md/html/csv and deliver it to the user
+  create_document — generate docx/xlsx/pptx/pdf/md/html/csv and deliver it to the user
   send_file       — deliver an existing workspace file
   git             — read-only repository inspection
   run_shell       — shell commands; OFF by default (ENGRAM_ENABLE_SHELL_TOOL=1)
@@ -36,6 +36,7 @@ import html
 import json
 import logging
 import operator
+import os
 import re
 import subprocess
 import sys
@@ -51,20 +52,33 @@ log = logging.getLogger("engram.tools")
 
 
 class ToolContext:
-    def __init__(self, store: Store, chat_id: str, activity=None):
+    def __init__(self, store: Store, chat_id: str, activity=None, file_notifier=None):
         self.store = store
         self.chat_id = chat_id
         # Files the agent produced this turn; the interface delivers them.
         self.produced_files = []
+        # Subset already pushed to Telegram during the turn (don't wait for reply).
+        self.delivered_files = []
+        # How many times create_document / send_file ran this turn.
+        self.file_tools_called = 0
         # Images queued by view_image; the LLM loop attaches them to the next turn.
         self.pending_images = []
         # Optional callable(text): live activity feed shown in the chat.
         self.activity = activity
+        # Optional callable(path) -> bool: deliver file immediately when ready.
+        self.file_notifier = file_notifier
 
     def deliver_file(self, path):
         p = str(path)
         if p not in self.produced_files:
             self.produced_files.append(p)
+        if (self.file_notifier is not None and p not in self.delivered_files
+                and os.path.isfile(p)):
+            try:
+                if self.file_notifier(p):
+                    self.delivered_files.append(p)
+            except Exception:
+                log.debug("immediate file delivery failed", exc_info=True)
 
     def emit_activity(self, text: str):
         if self.activity is None:
@@ -207,14 +221,23 @@ def tool_specs() -> list:
         # ---- digital-assistant: document generation + delivery ----
         _spec("create_document",
               "Generate a real document and SEND it to the user. Use this for "
-              "'buatkan laporan', 'bikin docx/excel/pdf', etc. Formats: docx, "
-              "xlsx, pdf, md, html, txt, csv. Provide title and sections "
-              "([{heading, body}]); optionally a table {headers:[...], "
-              "rows:[[...]]}. csv/xlsx are best with a table.",
+              "'buatkan laporan', 'bikin docx/excel/ppt/pdf', etc. Formats: "
+              "docx, xlsx, pptx, pdf, md, html, txt, csv. "
+              "For LONG reports: write_file a .md draft first, then call "
+              "create_document with source_path (NOT huge inline sections — "
+              "large payloads can break the tool loop). Short docs: inline "
+              "sections ([{heading, body}]); optionally a table "
+              "{headers:[...], rows:[[...]]}. csv/xlsx are best with a table. "
+              "In docx/pptx bodies: '- ' lines become bullets (2 leading "
+              "spaces = sub-bullet), '1. ' numbered items, **text** bold. "
+              "For pptx each section becomes one slide.",
               {"filename": {"type": "string", "description": "without extension is fine"},
                "format": {"type": "string",
-                          "enum": ["docx", "xlsx", "pdf", "md", "html", "txt", "csv"]},
+                          "enum": ["docx", "xlsx", "pptx", "pdf", "md", "html", "txt", "csv"]},
                "title": {"type": "string"},
+               "source_path": {"type": "string",
+                               "description": "workspace .md/.txt/.html to render "
+                               "(preferred for long content)"},
                "sections": {"type": "array", "items": {
                    "type": "object",
                    "properties": {"heading": {"type": "string"},
@@ -300,11 +323,19 @@ def format_activity(name: str, args: dict) -> str:
     return f"{icon} {name}"
 
 
+_FILE_DELIVERY_TOOLS = frozenset({"create_document", "send_file"})
+# Noisy tools — skip live activity lines in Telegram (user sees spam).
+_QUIET_ACTIVITY = frozenset({"list_dir", "read_file", "search_files", "recall"})
+
+
 def run_tool(name: str, args: dict, ctx: ToolContext) -> str:
     handler = _HANDLERS.get(name)
     if handler is None or (name in _GATED and not getattr(config, _GATED[name])):
         return f"ERROR: unknown tool '{name}'"
-    ctx.emit_activity(format_activity(name, args or {}))
+    if name in _FILE_DELIVERY_TOOLS:
+        ctx.file_tools_called += 1
+    if name not in _QUIET_ACTIVITY:
+        ctx.emit_activity(format_activity(name, args or {}))
     try:
         result = handler(args or {}, ctx)
     except Exception as exc:  # tool errors go back to the model, not up the stack
@@ -563,11 +594,13 @@ def _search_files(args, ctx):
 
 
 def _create_document(args, ctx):
-    sections = _coerce_json(args.get("sections", []), list)
-    table = _coerce_json(args.get("table"), dict)
+    if not args.get("sections") and not args.get("source_path"):
+        return ("ERROR: provide sections OR source_path (for long reports: "
+                "write_file .md first, then create_document with source_path).")
     p = desktop.create_document(
         filename=args["filename"], doc_format=args["format"], title=args["title"],
-        sections=sections, table=table)
+        sections=args.get("sections", []), table=args.get("table"),
+        source_path=args.get("source_path"))
     if not p.is_file() or p.stat().st_size == 0:
         return "ERROR: document file was not created"
     ctx.deliver_file(p)

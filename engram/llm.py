@@ -103,10 +103,11 @@ def _convert_messages(messages: list, image_fn) -> list:
     return out
 
 
-def chat(system: str, messages: list, max_tokens: int = 2000, ctx=None) -> str:
+def chat(system: str, messages: list, max_tokens: int = None, ctx=None) -> str:
     """Conversational turn. When ctx (a tools.ToolContext) is given, the model
     gets the full tool set and we run the agentic loop until it stops calling
     tools (capped at config.MAX_TOOL_ITERS round trips)."""
+    max_tokens = max_tokens or config.MAX_OUTPUT_TOKENS
     if config.PROVIDER == "anthropic":
         return _anthropic_chat(system, messages, max_tokens, ctx)
     return _openai_chat(config.CHAT_MODEL, system, messages, max_tokens, ctx)
@@ -261,6 +262,7 @@ def _accumulate_sse(lines) -> dict:
     content, reasoning = [], []
     tool_calls = {}
     saw_chunk = False
+    finish_reason = None
     for line in lines:
         if not line or not line.startswith("data:"):
             continue
@@ -277,6 +279,8 @@ def _accumulate_sse(lines) -> dict:
             raise ValueError(f"provider mengirim error di stream: {msg}")
         for choice in chunk.get("choices") or []:
             saw_chunk = True
+            if choice.get("finish_reason"):
+                finish_reason = choice["finish_reason"]
             delta = choice.get("delta") or choice.get("message") or {}
             if delta.get("content"):
                 content.append(delta["content"])
@@ -301,6 +305,8 @@ def _accumulate_sse(lines) -> dict:
         msg["reasoning_content"] = "".join(reasoning)
     if tool_calls:
         msg["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+    if finish_reason:
+        msg["finish_reason"] = finish_reason
     return msg
 
 
@@ -346,6 +352,10 @@ def _openai_chat(model: str, system: str, messages: list, max_tokens: int, ctx) 
     if ctx is not None:
         payload["tools"] = tools.openai_tool_specs()
 
+    _MAX_TOOL_RESULT = 4000
+    _SHRINK_TOOLS = frozenset({"create_document"})
+    _SHRINK_ARG_LIMIT = 1500
+
     for _ in range(config.MAX_TOOL_ITERS):
         msg = _openai_vision_request(payload)
         if not (msg.get("tool_calls") or []) or ctx is None:
@@ -359,14 +369,41 @@ def _openai_chat(model: str, system: str, messages: list, max_tokens: int, ctx) 
         calls = cleaned["tool_calls"]
         for call in calls:
             fn = call.get("function", {})
+            raw = fn.get("arguments") or "{}"
             try:
-                args = json.loads(fn.get("arguments") or "{}")
+                args = json.loads(raw)
             except json.JSONDecodeError:
-                args = parse_json(fn.get("arguments") or "{}")
+                try:
+                    args = parse_json(raw)
+                except json.JSONDecodeError:
+                    args = None
+            if args is None:
+                # Truncated/malformed tool-call JSON (classic cause: output hit
+                # max_tokens mid-arguments). Tell the model instead of crashing
+                # the whole turn so it can retry with smaller arguments.
+                cause = ("your output hit the token limit mid-call"
+                         if msg.get("finish_reason") == "length"
+                         else "the arguments were not valid JSON")
+                result = (f"ERROR: tool call '{fn.get('name', '')}' failed — "
+                          f"{cause}. The tool did NOT run. Retry with smaller "
+                          "arguments: use write_file + create_document source_path, "
+                          "or shorter section bodies.")
+            else:
+                result = tools.run_tool(fn.get("name", ""), args, ctx)
+                if (not result.startswith("ERROR:")
+                        and fn.get("name") in _SHRINK_TOOLS
+                        and len(raw) > _SHRINK_ARG_LIMIT):
+                    # Re-sending huge create_document args on the next tool round
+                    # can break the tool loop — replace with a tiny stub after success.
+                    _shrink_tool_call_args(cleaned, call.get("id", ""),
+                                           fn.get("name", ""), args)
+            if len(result) > _MAX_TOOL_RESULT:
+                result = (result[:_MAX_TOOL_RESULT]
+                          + f"\n...[truncated, {len(result)} chars total]")
             convo.append({
                 "role": "tool",
                 "tool_call_id": call.get("id", ""),
-                "content": tools.run_tool(fn.get("name", ""), args, ctx),
+                "content": result,
             })
         # view_image queued images: attach them as a follow-up user message.
         if ctx.pending_images:
@@ -377,6 +414,22 @@ def _openai_chat(model: str, system: str, messages: list, max_tokens: int, ctx) 
                     {"type": "text", "text": "(gambar dari view_image terlampir)"}]})
         payload["messages"] = convo
     return _visible_text(msg) or "(tool budget exhausted before I reached an answer)"
+
+
+def _shrink_tool_call_args(assistant_msg: dict, call_id: str,
+                           tool_name: str, args: dict) -> None:
+    """Replace huge tool-call arguments after successful execution so the next
+    MiniMax request doesn't replay multi-KB JSON and hit error 2013."""
+    for tc in assistant_msg.get("tool_calls") or []:
+        if tc.get("id") != call_id:
+            continue
+        fn = tc.get("function") or {}
+        stub = {k: args[k] for k in ("filename", "format", "title", "source_path")
+                if k in args}
+        stub["_note"] = (
+            f"{tool_name} executed; large inline payload omitted from history")
+        fn["arguments"] = json.dumps(stub, ensure_ascii=False)
+        return
 
 
 def _clean_assistant(msg: dict) -> dict:

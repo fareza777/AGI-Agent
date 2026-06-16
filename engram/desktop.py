@@ -5,15 +5,18 @@ roots the operator opts into via ENGRAM_ALLOWED_DIRS). Paths are resolved and
 checked against those roots, so the agent cannot read or write outside them
 even under prompt injection.
 
-Document generation degrades gracefully: if python-docx / openpyxl aren't
-installed, the relevant tool returns a clear "pip install" message instead of
-crashing, and plain-text/markdown/csv/html generation always works.
+Document generation degrades gracefully: if python-docx / openpyxl /
+python-pptx / reportlab aren't installed, the relevant tool returns a clear
+"pip install" message instead of crashing, and plain-text/markdown/csv/html
+generation always works.
 """
 
 import csv
 import io
 import os
+import re
 import subprocess
+from datetime import date
 from pathlib import Path
 
 from . import config
@@ -176,21 +179,84 @@ def search_files(query: str, path: str = ".", max_hits: int = 40) -> str:
 
 # ---------------- document generation ----------------
 
+def _sections_from_md(text: str) -> list:
+    """Split markdown into create_document sections (## headings → slides/sections)."""
+    sections = []
+    heading = ""
+    body = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if heading or body:
+                sections.append({"heading": heading,
+                                 "body": "\n".join(body).strip()})
+            heading = line[3:].strip()
+            body = []
+        elif line.startswith("# ") and not sections and not heading and not body:
+            continue  # top-level title — create_document title arg covers this
+        else:
+            body.append(line)
+    if heading or body:
+        sections.append({"heading": heading, "body": "\n".join(body).strip()})
+    if not sections and text.strip():
+        sections = [{"heading": "", "body": text.strip()}]
+    return sections
+
+
 def create_document(filename: str, doc_format: str, title: str,
-                    sections: list, table: dict = None) -> Path:
+                    sections: list = None, table: dict = None,
+                    source_path: str = None) -> Path:
     """Create a document in the workspace.
 
     sections: [{"heading": str, "body": str}]
+    source_path: optional workspace .md/.txt/.html to render (preferred for long
+      reports — write_file first, then call with source_path to keep tool args small).
     table (optional): {"headers": [...], "rows": [[...], ...]}
-    doc_format: docx | xlsx | pdf | md | html | txt | csv
+    doc_format: docx | xlsx | pptx | pdf | md | html | txt | csv
+
+    Body text understands light markup in docx/pptx: lines starting with
+    "- "/"* " become bullets (two leading spaces = sub-bullet), "1. " becomes
+    a numbered item, and **text** renders bold.
     """
     fmt = doc_format.lower().lstrip(".")
     target = resolve(_with_ext(filename, fmt), for_write=True)
     builder = _BUILDERS.get(fmt)
     if builder is None:
         raise WorkspaceError(f"unsupported document format '{doc_format}'")
-    builder(target, title, sections or [], table)
+    title = _unescape(title)
+    if source_path:
+        src = resolve(source_path, must_exist=True)
+        text = src.read_text(encoding="utf-8")
+        ext = src.suffix.lower()
+        if ext in (".md", ".markdown"):
+            sections = _sections_from_md(text)
+        elif ext in (".txt", ".html", ".htm"):
+            sections = [{"heading": "", "body": text}]
+        else:
+            raise WorkspaceError(
+                f"source_path must be .md, .txt, or .html (got '{ext}')")
+    sections = [{"heading": _unescape(s.get("heading")),
+                 "body": _unescape(s.get("body"))} for s in (sections or [])]
+    if table:
+        table = {"headers": [_unescape(h) for h in table.get("headers", [])],
+                 "rows": [[_unescape(c) for c in row]
+                          for row in table.get("rows", [])]}
+    builder(target, title, sections, table)
     return target
+
+
+def _unescape(text):
+    """Fix double-escaped newlines from LLM tool calls.
+
+    Models sometimes emit '\\n' as two literal characters inside JSON string
+    args; the parsed value then contains backslash-n text instead of real
+    line breaks, which kills bullet/paragraph parsing. Only rewrite when the
+    string has NO real newlines (so legit backslashes in normal multi-line
+    text, e.g. Windows paths, are left alone)."""
+    text = str(text or "")
+    if "\\n" in text and "\n" not in text:
+        text = (text.replace("\\r\\n", "\n").replace("\\n", "\n")
+                .replace("\\t", "    "))
+    return text
 
 
 def _with_ext(filename: str, fmt: str) -> str:
@@ -262,57 +328,356 @@ def _esc(text: str) -> str:
     return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+# ---- shared document styling: palette + light markup parsing ----
+
+_PRIMARY = "1F3864"   # dark blue — titles, table headers
+_ACCENT = "2E74B5"    # medium blue — secondary headings, rules
+_LIGHT = "DCE6F1"     # light blue — banded table rows
+_GRAY = "595959"      # subtitles, footers
+_BODY_COLOR = "262626"
+
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_NUM_LINE = re.compile(r"^\d+[.)]\s+")
+
+
+def _plain(text: str) -> str:
+    """Strip **bold** markers for formats that don't render them."""
+    return _BOLD_RE.sub(r"\1", str(text or ""))
+
+
+def _parse_lines(body: str):
+    """Classify body lines: yields (kind, level, text).
+
+    kind: 'bullet' ('- '/'* '), 'number' ('1. '), or 'text'. Two or more
+    leading spaces on a bullet/number make it a sub-item (level 1).
+    """
+    for raw in body.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        level = 1 if (len(raw) - len(raw.lstrip(" "))) >= 2 else 0
+        if stripped[:2] in ("- ", "* "):
+            yield "bullet", level, stripped[2:].strip()
+        elif _NUM_LINE.match(stripped):
+            yield "number", level, _NUM_LINE.sub("", stripped)
+        else:
+            yield "text", 0, stripped
+
+
+def _coerce(value):
+    """Turn numeric-looking strings into real numbers for spreadsheet cells."""
+    text = str(value).strip()
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return _plain(text)
+
+
 def _build_docx(target, title, sections, table):
     try:
         from docx import Document
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from docx.shared import Pt, RGBColor
     except ImportError:
         # Zero-dependency fallback — a valid .docx, just plainer styling.
         from . import docgen
         docgen.minimal_docx(target, title, sections, table)
         return
     doc = Document()
-    doc.add_heading(title, level=0)
+    # python-docx's default template opens in "[Compatibility Mode]" in modern
+    # Word; declare compatibilityMode 15 (Word 2013+) so it opens as a normal
+    # modern document.
+    settings = doc.settings.element
+    compat = settings.find(qn("w:compat"))
+    if compat is None:
+        compat = OxmlElement("w:compat")
+        settings.append(compat)
+    for cs in compat.findall(qn("w:compatSetting")):
+        if cs.get(qn("w:name")) == "compatibilityMode":
+            compat.remove(cs)
+    mode = OxmlElement("w:compatSetting")
+    mode.set(qn("w:name"), "compatibilityMode")
+    mode.set(qn("w:uri"), "http://schemas.microsoft.com/office/word")
+    mode.set(qn("w:val"), "15")
+    compat.append(mode)
+
+    normal = doc.styles["Normal"]
+    normal.font.name = "Calibri"
+    normal.font.size = Pt(11)
+    normal.paragraph_format.space_after = Pt(6)
+    normal.paragraph_format.line_spacing = 1.15
+    for style_name, size, color in (("Heading 1", 14, _PRIMARY),
+                                    ("Heading 2", 12, _ACCENT)):
+        st = doc.styles[style_name]
+        st.font.name = "Calibri"
+        st.font.size = Pt(size)
+        st.font.bold = True
+        st.font.color.rgb = RGBColor.from_string(color)
+
+    def rich(par, text):
+        """Add runs to a paragraph, rendering **segments** bold."""
+        pos = 0
+        for m in _BOLD_RE.finditer(text):
+            if m.start() > pos:
+                par.add_run(text[pos:m.start()])
+            par.add_run(m.group(1)).bold = True
+            pos = m.end()
+        if pos < len(text):
+            par.add_run(text[pos:])
+
+    def shade(cell, fill):
+        el = OxmlElement("w:shd")
+        el.set(qn("w:val"), "clear")
+        el.set(qn("w:fill"), fill)
+        cell._tc.get_or_add_tcPr().append(el)
+
+    # Title block: large colored title, gray date line, thin rule under it.
+    tpar = doc.add_paragraph()
+    trun = tpar.add_run(_plain(title))
+    trun.font.size = Pt(24)
+    trun.font.bold = True
+    trun.font.color.rgb = RGBColor.from_string(_PRIMARY)
+    dpar = doc.add_paragraph()
+    drun = dpar.add_run(date.today().strftime("%d %B %Y"))
+    drun.font.size = Pt(10)
+    drun.font.color.rgb = RGBColor.from_string(_GRAY)
+    border = OxmlElement("w:pBdr")
+    bottom = OxmlElement("w:bottom")
+    bottom.set(qn("w:val"), "single")
+    bottom.set(qn("w:sz"), "6")
+    bottom.set(qn("w:color"), _ACCENT)
+    border.append(bottom)
+    dpar._p.get_or_add_pPr().append(border)
+
     for s in sections:
         if s.get("heading"):
-            doc.add_heading(s["heading"], level=1)
-        if s.get("body"):
-            for para in s["body"].split("\n\n"):
-                doc.add_paragraph(para)
+            doc.add_heading(_plain(s["heading"]), level=1)
+        for kind, level, text in _parse_lines(s.get("body") or ""):
+            if kind == "bullet":
+                par = doc.add_paragraph(
+                    style="List Bullet 2" if level else "List Bullet")
+            elif kind == "number":
+                par = doc.add_paragraph(
+                    style="List Number 2" if level else "List Number")
+            else:
+                par = doc.add_paragraph()
+                rich(par, text)
+                par.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
     if table and table.get("headers"):
         headers = table["headers"]
         t = doc.add_table(rows=1, cols=len(headers))
-        t.style = "Light Grid Accent 1"
+        t.style = "Table Grid"
         for i, h in enumerate(headers):
-            t.rows[0].cells[i].text = str(h)
-        for row in table.get("rows", []):
+            cell = t.rows[0].cells[i]
+            run = cell.paragraphs[0].add_run(_plain(h))
+            run.font.bold = True
+            run.font.color.rgb = RGBColor.from_string("FFFFFF")
+            shade(cell, _PRIMARY)
+        for r, row in enumerate(table.get("rows", [])):
             cells = t.add_row().cells
             for i, c in enumerate(row[:len(headers)]):
-                cells[i].text = str(c)
+                cells[i].text = _plain(c)
+                if r % 2 == 1:
+                    shade(cells[i], _LIGHT)
+
+    # Footer: centered page number field.
+    fpar = doc.sections[0].footer.paragraphs[0]
+    fpar.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    fld = OxmlElement("w:fldSimple")
+    fld.set(qn("w:instr"), "PAGE")
+    fpar._p.append(fld)
+
     doc.save(str(target))
 
 
 def _build_xlsx(target, title, sections, table):
     try:
         from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
     except ImportError:
         from . import docgen
         docgen.minimal_xlsx(target, title, sections, table)
         return
     wb = Workbook()
     ws = wb.active
-    ws.title = title[:31] or "Sheet1"
+    ws.title = re.sub(r"[\[\]:*?/\\]", "-", _plain(title))[:31] or "Sheet1"
+    thin = Side(style="thin", color="BFBFBF")
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
     if table and table.get("headers"):
-        ws.append(table["headers"])
+        headers = [_plain(h) for h in table["headers"]]
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.font = Font(name="Calibri", bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor=_PRIMARY)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = box
         for row in table.get("rows", []):
-            ws.append(list(row))
+            ws.append([_coerce(c) for c in row])
+        band = PatternFill("solid", fgColor="F2F6FA")
+        for r in range(2, ws.max_row + 1):
+            for c in range(1, len(headers) + 1):
+                cell = ws.cell(row=r, column=c)
+                cell.border = box
+                if r % 2 == 1:
+                    cell.fill = band
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        for c in range(1, len(headers) + 1):
+            width = max(len(str(ws.cell(row=r, column=c).value or ""))
+                        for r in range(1, ws.max_row + 1))
+            ws.column_dimensions[get_column_letter(c)].width = min(max(width + 3, 10), 50)
     else:
-        ws.append([title])
+        ws["A1"] = _plain(title)
+        ws["A1"].font = Font(bold=True, size=14, color=_PRIMARY)
+        r = 3
         for s in sections:
             if s.get("heading"):
-                ws.append([s["heading"]])
-            if s.get("body"):
-                ws.append([s["body"]])
+                cell = ws.cell(row=r, column=1, value=_plain(s["heading"]))
+                cell.font = Font(bold=True, color=_ACCENT)
+                r += 1
+            for _kind, _level, text in _parse_lines(s.get("body") or ""):
+                ws.cell(row=r, column=1, value=_plain(text))
+                r += 1
+            r += 1
+        ws.column_dimensions["A"].width = 90
     wb.save(str(target))
+
+
+def _build_pptx(target, title, sections, table):
+    try:
+        from pptx import Presentation
+        from pptx.dml.color import RGBColor
+        from pptx.enum.shapes import MSO_SHAPE
+        from pptx.util import Inches, Pt
+    except ImportError:
+        raise WorkspaceError(
+            "pptx generation needs python-pptx — run: pip install python-pptx")
+
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)   # 16:9
+    prs.slide_height = Inches(7.5)
+    blank = prs.slide_layouts[6]
+    primary = RGBColor.from_string(_PRIMARY)
+    accent = RGBColor.from_string(_ACCENT)
+    gray = RGBColor.from_string(_GRAY)
+    body_color = RGBColor.from_string(_BODY_COLOR)
+
+    def bar(slide, x, y, w, h, color):
+        shape = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h))
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = color
+        shape.line.fill.background()
+        shape.shadow.inherit = False
+
+    def textframe(slide, x, y, w, h):
+        box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+        box.text_frame.word_wrap = True
+        return box.text_frame
+
+    def rich(par, text, size, color, bold=False):
+        pos = 0
+        for m in _BOLD_RE.finditer(text):
+            for chunk, chunk_bold in ((text[pos:m.start()], bold), (m.group(1), True)):
+                if chunk:
+                    run = par.add_run()
+                    run.text = chunk
+                    run.font.size = Pt(size)
+                    run.font.bold = chunk_bold
+                    run.font.color.rgb = color
+            pos = m.end()
+        if pos < len(text):
+            run = par.add_run()
+            run.text = text[pos:]
+            run.font.size = Pt(size)
+            run.font.bold = bold
+            run.font.color.rgb = color
+
+    # ----- title slide -----
+    slide = prs.slides.add_slide(blank)
+    bar(slide, 0, 0, 0.3, 7.5, primary)
+    bar(slide, 0.3, 0, 0.07, 7.5, accent)
+    tf = textframe(slide, 1.0, 2.7, 11.6, 1.8)
+    rich(tf.paragraphs[0], _plain(title), 40, primary, bold=True)
+    sub = textframe(slide, 1.0, 4.4, 11.6, 0.6)
+    rich(sub.paragraphs[0], date.today().strftime("%d %B %Y"), 16, gray)
+
+    def content_slide(heading):
+        slide = prs.slides.add_slide(blank)
+        bar(slide, 0, 0, 13.333, 0.12, accent)
+        htf = textframe(slide, 0.6, 0.45, 12.1, 0.9)
+        rich(htf.paragraphs[0], _plain(heading), 28, primary, bold=True)
+        return slide
+
+    max_lines = 8
+    for s in sections:
+        lines = list(_parse_lines(s.get("body") or ""))
+        chunks = ([lines[i:i + max_lines] for i in range(0, len(lines), max_lines)]
+                  or [[]])
+        counter = 0
+        for n, chunk in enumerate(chunks):
+            heading = s.get("heading") or _plain(title)
+            if n:
+                heading += " (lanjutan)"
+            slide = content_slide(heading)
+            tf = textframe(slide, 0.9, 1.6, 11.6, 5.4)
+            first = True
+            for kind, level, text in chunk:
+                par = tf.paragraphs[0] if first else tf.add_paragraph()
+                first = False
+                par.space_after = Pt(10)
+                par.level = level
+                if kind == "number":
+                    counter += 1
+                    prefix = f"{counter}.  "
+                elif kind == "bullet":
+                    prefix = "–  " if level else "•  "
+                else:
+                    prefix = ""
+                rich(par, prefix + text, 16 if level else 18, body_color)
+
+    if table and table.get("headers"):
+        headers = table["headers"]
+        rows = table.get("rows", [])
+        shown = rows[:12]
+        slide = content_slide("Data")
+        shape = slide.shapes.add_table(
+            len(shown) + 1, len(headers), Inches(0.9), Inches(1.7),
+            Inches(11.5), Inches(0.45 * (len(shown) + 1)))
+        tbl = shape.table
+        for i, h in enumerate(headers):
+            cell = tbl.cell(0, i)
+            cell.text = _plain(h)
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = primary
+            for par in cell.text_frame.paragraphs:
+                for run in par.runs:
+                    run.font.bold = True
+                    run.font.size = Pt(14)
+                    run.font.color.rgb = RGBColor.from_string("FFFFFF")
+        for r, row in enumerate(shown, start=1):
+            for i, c in enumerate(row[:len(headers)]):
+                cell = tbl.cell(r, i)
+                cell.text = _plain(c)
+                for par in cell.text_frame.paragraphs:
+                    for run in par.runs:
+                        run.font.size = Pt(12)
+                        run.font.color.rgb = body_color
+        if len(rows) > len(shown):
+            note = textframe(slide, 0.9, 6.9, 11.5, 0.4)
+            rich(note.paragraphs[0],
+                 f"Menampilkan {len(shown)} dari {len(rows)} baris — lengkapnya "
+                 f"di lampiran xlsx.", 12, gray)
+
+    prs.save(str(target))
 
 
 def _build_pdf(target, title, sections, table):
@@ -350,7 +715,7 @@ def _build_pdf(target, title, sections, table):
 _BUILDERS = {
     "md": _build_md, "markdown": _build_md, "txt": _build_txt, "text": _build_txt,
     "csv": _build_csv, "html": _build_html, "docx": _build_docx,
-    "xlsx": _build_xlsx, "pdf": _build_pdf,
+    "xlsx": _build_xlsx, "pptx": _build_pptx, "pdf": _build_pdf,
 }
 
 _NATIVE_LIBS = {"docx": "docx", "xlsx": "openpyxl", "pdf": "reportlab"}

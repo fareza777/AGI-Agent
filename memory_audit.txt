@@ -1,0 +1,21 @@
+=== ENGRAM MEMORY AUDIT ===
+DB path:   D:\Engram AI Agents\Engram-Agent\engram.db
+Exists:    True
+Size:      368,640 bytes
+
+--- COUNTS ---
+Events (total):        146
+  user messages:       52
+  agent messages:      51
+  belum dikonsolidasi: 16
+Claims (aktif):        56
+Claims (total):        64
+Claims (superseded):   8
+Goals (aktif):         0
+Traceback (most recent call last):
+  File "D:\Engram AI Agents\Engram-Agent\check_memory.py", line 50, in <module>
+    print(f"Distil ratio:          {claims_active}/{events_total} events \u2192 {ratio:.1f}% jadi claim aktif")
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 37: character maps to <undefined>

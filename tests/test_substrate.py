@@ -14,6 +14,8 @@ from engram.store import Store, next_occurrence  # noqa: E402
 from engram import config, composer, identity, skills, desktop, telegram_format  # noqa: E402
 from engram.llm import parse_json, strip_reasoning  # noqa: E402
 from engram.tools import ToolContext, run_tool  # noqa: E402
+from engram.agent import _guard_file_claims, _inject_execution_nudge  # noqa: E402
+from engram.composer import _filter_stale_lessons  # noqa: E402
 
 
 class StoreTests(unittest.TestCase):
@@ -619,6 +621,14 @@ class DesktopTests(unittest.TestCase):
                                     [{"heading": "H", "body": "B"}])
         self.assertTrue(p.exists() and p.stat().st_size > 0)
 
+    def test_create_document_from_source_path(self):
+        md = config.WORKSPACE_DIR / "draft_src.md"
+        md.write_text("# Title\n\n## Bagian A\n\nIsi paragraf.\n\n## Bagian B\n\nLainnya.",
+                      encoding="utf-8")
+        p = desktop.create_document("from_src", "docx", "Judul",
+                                    source_path="draft_src.md")
+        self.assertTrue(p.exists() and p.stat().st_size > 0)
+
 
 class DocgenFallbackTests(unittest.TestCase):
     """Zero-dependency docx/xlsx/pdf generators — valid files, no libraries."""
@@ -724,6 +734,82 @@ class DocumentToolDeliveryTests(unittest.TestCase):
         ctx = ToolContext(self.store, "c1", activity=lines.append)
         run_tool("view_image", {"path": "tidak_ada.png"}, ctx)
         self.assertTrue(any(l.startswith("❌ view_image:") for l in lines))
+
+
+class FileClaimGuardTests(unittest.TestCase):
+    def setUp(self):
+        fd, self.db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.db)
+        self.ctx = ToolContext(self.store, "c1")
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.db)
+
+    def test_no_warning_when_files_queued(self):
+        self.ctx.produced_files.append("/tmp/x.docx")
+        reply = "2 file sudah dikirim ke Telegram."
+        self.assertEqual(
+            _guard_file_claims(reply, self.ctx, "kirim laporan", self.store, "c1"), reply)
+
+    def test_warning_on_hallucinated_send(self):
+        reply = "Cek Telegram — 2 file sudah dikirim (docx + pptx)."
+        out = _guard_file_claims(reply, self.ctx, "buat laporan docx", self.store, "c1")
+        self.assertIn("Catatan sistem", out)
+        self.assertIn("tidak dipanggil", out)
+
+    def test_no_warning_on_status_recap(self):
+        reply = ("Halo! Status: laporan_llm.docx — sudah dikirim, "
+                 "ppt_llm.pptx — sudah dikirim. Mau revisi?")
+        out = _guard_file_claims(reply, self.ctx, "halo", self.store, "c1")
+        self.assertNotIn("Catatan sistem", out)
+
+    def test_warning_when_tool_ran_but_no_file(self):
+        self.ctx.file_tools_called = 1
+        reply = "Sebentar ya, lagi buat file."
+        out = _guard_file_claims(reply, self.ctx, "buat laporan", self.store, "c1")
+        self.assertIn("tidak ada file yang ter-queue", out)
+
+    def test_file_tools_called_counter(self):
+        ctx = ToolContext(self.store, "c1")
+        run_tool("recall", {"query": "test"}, ctx)
+        self.assertEqual(ctx.file_tools_called, 0)
+        # create_document needs workspace — just verify counter increments on send_file error path
+        run_tool("send_file", {"path": "missing.docx"}, ctx)
+        self.assertEqual(ctx.file_tools_called, 1)
+
+
+class StaleLessonFilterTests(unittest.TestCase):
+    def test_filters_wrong_failure_lessons(self):
+        lessons = [
+            {"id": 1, "value": "create_document silent-fail on server engram"},
+            {"id": 2, "value": "use write_file + source_path for long reports"},
+        ]
+        out = _filter_stale_lessons(lessons)
+        self.assertEqual(len(out), 1)
+        self.assertIn("source_path", out[0]["value"])
+
+
+class ExecutionNudgeTests(unittest.TestCase):
+    def setUp(self):
+        fd, self.db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.db)
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.db)
+
+    def test_nudge_on_file_request(self):
+        out = _inject_execution_nudge("buat laporan word justify", self.store, "c1")
+        self.assertIn("INSTRUKSI SISTEM", out)
+
+    def test_nudge_on_confirmation(self):
+        self.store.log_event("agent", "message",
+                             "Mau lanjut? Alternatif write_file + send_file", "c1")
+        out = _inject_execution_nudge("ya", self.store, "c1")
+        self.assertIn("INSTRUKSI SISTEM", out)
 
 
 if __name__ == "__main__":
