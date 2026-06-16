@@ -2,7 +2,15 @@
 
 
 
+
+
+
+
 and runs the background "sleep cycle" thread.
+
+
+
+
 
 
 
@@ -14,7 +22,19 @@ and runs the background "sleep cycle" thread.
 
 
 
+
+
+
+
+
+
+
+
 import logging
+
+
+
+
 
 
 
@@ -22,11 +42,23 @@ import os
 
 
 
+
+
+
+
 import re
 
 
 
+
+
+
+
 import threading
+
+
+
+
 
 
 
@@ -38,7 +70,19 @@ import time
 
 
 
+
+
+
+
+
+
+
+
 from . import composer, config, consolidator, llm, skill_compiler
+
+
+
+
 
 
 
@@ -46,11 +90,27 @@ from . import store as store_mod
 
 
 
+
+
+
+
 from .store import Store
 
 
 
+
+
+
+
 from .tools import ToolContext
+
+
+
+
+
+
+
+
 
 
 
@@ -66,7 +126,19 @@ log = logging.getLogger("engram.agent")
 
 
 
+
+
+
+
+
+
+
+
 # Reply patterns that imply a file was delivered without checking produced_files.
+
+
+
+
 
 
 
@@ -74,7 +146,15 @@ _FILE_SENT_RE = re.compile(
 
 
 
+
+
+
+
     r"(sudah\s+(di)?kirim|file\s+sudah|cek\s+telegram|"
+
+
+
+
 
 
 
@@ -82,11 +162,23 @@ _FILE_SENT_RE = re.compile(
 
 
 
+
+
+
+
     r"\d+\s+file\s+sudah)",
 
 
 
+
+
+
+
     re.I)
+
+
+
+
 
 
 
@@ -94,7 +186,15 @@ _FILE_FMT_RE = re.compile(r"\.(docx|pptx|xlsx|pdf|csv|md|html)\b", re.I)
 
 
 
+
+
+
+
 _CONFIRM_RE = re.compile(
+
+
+
+
 
 
 
@@ -102,7 +202,15 @@ _CONFIRM_RE = re.compile(
 
 
 
+
+
+
+
 _FILE_TASK_RE = re.compile(
+
+
+
+
 
 
 
@@ -110,7 +218,15 @@ _FILE_TASK_RE = re.compile(
 
 
 
+
+
+
+
     re.I)
+
+
+
+
 
 
 
@@ -118,11 +234,23 @@ _WHERE_FILE_RE = re.compile(
 
 
 
+
+
+
+
     r"^(mana|dimana|where)\??$|belum (masuk|terlihat|ada)|gak ada|kok belum",
 
 
 
+
+
+
+
     re.I)
+
+
+
+
 
 
 
@@ -130,7 +258,15 @@ _STALL_REPLY_RE = re.compile(
 
 
 
+
+
+
+
     r"(model hanya mengembalikan reasoning|mau lanjut dengan format|"
+
+
+
+
 
 
 
@@ -138,7 +274,19 @@ _STALL_REPLY_RE = re.compile(
 
 
 
+
+
+
+
     re.I)
+
+
+
+
+
+
+
+
 
 
 
@@ -150,7 +298,15 @@ _EXECUTION_NUDGE = (
 
 
 
+
+
+
+
     "\n\n[INSTRUKSI SISTEM: Wajib eksekusi tool di giliran ini — write_file, "
+
+
+
+
 
 
 
@@ -158,7 +314,15 @@ _EXECUTION_NUDGE = (
 
 
 
+
+
+
+
     "Dilarang hanya menjelaskan, minta izin lagi, atau mengutip kegagalan lama.]"
+
+
+
+
 
 
 
@@ -174,7 +338,23 @@ _EXECUTION_NUDGE = (
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 # Pre-tool gate: when the user asks about a folder/drive/listing, we
+
+
+
+
 
 
 
@@ -182,7 +362,15 @@ _EXECUTION_NUDGE = (
 
 
 
+
+
+
+
 # This is hard code, not a prompt instruction — the model cannot talk
+
+
+
+
 
 
 
@@ -190,7 +378,15 @@ _EXECUTION_NUDGE = (
 
 
 
+
+
+
+
 # prompt to call list_dir) was ignored; the model kept answering from
+
+
+
+
 
 
 
@@ -198,7 +394,15 @@ _EXECUTION_NUDGE = (
 
 
 
+
+
+
+
 _FS_QUERY_RE = re.compile(
+
+
+
+
 
 
 
@@ -206,7 +410,15 @@ _FS_QUERY_RE = re.compile(
 
 
 
+
+
+
+
     r"apa\s+(aja|yang|isi)\s+(isi|yang|ada)\s+(di|dalam)\s+|"
+
+
+
+
 
 
 
@@ -214,7 +426,15 @@ _FS_QUERY_RE = re.compile(
 
 
 
+
+
+
+
     r"tunjukkan\s+(isi|folder|file)|"
+
+
+
+
 
 
 
@@ -222,7 +442,15 @@ _FS_QUERY_RE = re.compile(
 
 
 
+
+
+
+
     r"list\s+(drive|folder|isi|d:|g:)|"
+
+
+
+
 
 
 
@@ -230,7 +458,15 @@ _FS_QUERY_RE = re.compile(
 
 
 
+
+
+
+
     r"d:\s*\\?\??|g:\s*\\?\??|c:\s*\\?\??|"
+
+
+
+
 
 
 
@@ -238,7 +474,15 @@ _FS_QUERY_RE = re.compile(
 
 
 
+
+
+
+
     r"what\'s\s+in\s+|"
+
+
+
+
 
 
 
@@ -246,7 +490,15 @@ _FS_QUERY_RE = re.compile(
 
 
 
+
+
+
+
     re.I)
+
+
+
+
 
 
 
@@ -254,13 +506,31 @@ _FS_QUERY_RE = re.compile(
 
 
 
+
+
+
+
 _FS_DRIVE_RE = re.compile(r"\b([dgc]):\\?", re.I)
+
+
 
 # Also catch natural phrasing: "drive D", "di D", "partisi D".
 
+
+
 _FS_NATURAL_DRIVE_RE = re.compile(
 
+
+
     r"\b(?:drive|partisi|di)\s+([dgc])\b", re.I)
+
+
+
+
+
+
+
+
 
 
 
@@ -272,7 +542,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
     """If user_text looks like a file-system query, return a `list_dir`
+
+
+
+
 
 
 
@@ -280,7 +558,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
     string ready to inject as a system note for the LLM.
+
+
+
+
 
 
 
@@ -288,7 +574,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
     folder X' -> ./X or workspace/X."""
+
+
+
+
 
 
 
@@ -296,7 +590,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
         return None
+
+
+
+
 
 
 
@@ -304,7 +606,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
     m = _FS_DRIVE_RE.search(user_text) or _FS_NATURAL_DRIVE_RE.search(user_text)
+
+
+
+
 
 
 
@@ -312,7 +622,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
         path = f"{m.group(1).upper()}:/"
+
+
+
+
 
 
 
@@ -320,7 +638,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
         # No drive letter: use the workspace. User almost always means the
+
+
+
+
 
 
 
@@ -328,7 +654,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
         # guess — ask the LLM to ask the user.
+
+
+
+
 
 
 
@@ -336,7 +670,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
             "FS-PREFLIGHT: no drive letter in the query. Ask the user to "
+
+
+
+
 
 
 
@@ -344,7 +686,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
     try:
+
+
+
+
 
 
 
@@ -352,7 +702,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
     except Exception as exc:
+
+
+
+
 
 
 
@@ -360,7 +718,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
     # Truncate to a safe size so we don't blow the context.
+
+
+
+
 
 
 
@@ -368,7 +734,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
         result = result[:4000] + "\n[...truncated; use list_dir tool for more]"
+
+
+
+
 
 
 
@@ -376,7 +750,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
         f"FS-PREFLIGHT: list_dir({path}) returned this VERBATIM list. "
+
+
+
+
 
 
 
@@ -384,7 +766,15 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
         f"If the user wants recursion, call search_files or list_dir on "
+
+
+
+
 
 
 
@@ -396,7 +786,19 @@ def _fs_preflight(user_text: str) -> str | None:
 
 
 
+
+
+
+
+
+
+
+
 def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
+
+
+
+
 
 
 
@@ -404,7 +806,15 @@ def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
 
 
 
+
+
+
+
     tail = store.recent_events(chat_id, config.CONVERSATION_TAIL)
+
+
+
+
 
 
 
@@ -412,7 +822,15 @@ def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
 
 
 
+
+
+
+
         (e["content"] for e in reversed(tail) if e["actor"] == "agent"), "")
+
+
+
+
 
 
 
@@ -420,7 +838,15 @@ def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
 
 
 
+
+
+
+
     proposed = bool(re.search(
+
+
+
+
 
 
 
@@ -428,7 +854,15 @@ def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
 
 
 
+
+
+
+
         prev_assistant, re.I))
+
+
+
+
 
 
 
@@ -436,7 +870,15 @@ def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
 
 
 
+
+
+
+
         return user_text + _EXECUTION_NUDGE
+
+
+
+
 
 
 
@@ -444,7 +886,15 @@ def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
 
 
 
+
+
+
+
         return user_text + _EXECUTION_NUDGE
+
+
+
+
 
 
 
@@ -460,7 +910,23 @@ def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 def _should_retry_for_tools(reply: str, user_text: str, ctx: ToolContext) -> bool:
+
+
+
+
 
 
 
@@ -468,7 +934,15 @@ def _should_retry_for_tools(reply: str, user_text: str, ctx: ToolContext) -> boo
 
 
 
+
+
+
+
         return False
+
+
+
+
 
 
 
@@ -476,7 +950,15 @@ def _should_retry_for_tools(reply: str, user_text: str, ctx: ToolContext) -> boo
 
 
 
+
+
+
+
         return False
+
+
+
+
 
 
 
@@ -492,7 +974,23 @@ def _should_retry_for_tools(reply: str, user_text: str, ctx: ToolContext) -> boo
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 def _user_expects_files(user_text: str, store: Store, chat_id: str) -> bool:
+
+
+
+
 
 
 
@@ -500,7 +998,15 @@ def _user_expects_files(user_text: str, store: Store, chat_id: str) -> bool:
 
 
 
+
+
+
+
     text = (user_text or "").strip()
+
+
+
+
 
 
 
@@ -508,7 +1014,15 @@ def _user_expects_files(user_text: str, store: Store, chat_id: str) -> bool:
 
 
 
+
+
+
+
         return True
+
+
+
+
 
 
 
@@ -516,25 +1030,59 @@ def _user_expects_files(user_text: str, store: Store, chat_id: str) -> bool:
 
 
 
+
+
+
+
         return True
+
+
+
+
 
 
 
     if not _CONFIRM_RE.match(text):
+
         return False
+
     tail = store.recent_events(chat_id, 4)
+
     prev = next((e["content"] for e in reversed(tail) if e["actor"] == "agent"), "")
+
     # Only count it as a follow-up file intent if the previous assistant
+
     # message was an actual PROPOSAL to send a file, not a list of files
+
     # that happen to be on disk ("ada 6 folder + 7 file di D:...").
+
     # Proposal language: "saya akan kirim", "ini file X.docx", ".docx"
+
     # as a standalone token, "kirim/buat ... file/dokumen".
+
     if re.search(
+
         r"(saya akan (kirim|generate|buat)|ini (file |lampiran )?\w+\.(docx|pptx|pdf|xlsx)|"
+
         r"(kirim|generate|buat).{0,30}(file|dokumen|laporan))",
+
         prev, re.I):
+
         return True
+
     return False
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -550,7 +1098,15 @@ def _guard_file_claims(reply: str, ctx: ToolContext,
 
 
 
+
+
+
+
                       user_text: str = "", store: Store = None, chat_id: str = "") -> str:
+
+
+
+
 
 
 
@@ -558,7 +1114,15 @@ def _guard_file_claims(reply: str, ctx: ToolContext,
 
 
 
+
+
+
+
     queued — only on turns where the user expected a deliverable."""
+
+
+
+
 
 
 
@@ -566,15 +1130,36 @@ def _guard_file_claims(reply: str, ctx: ToolContext,
 
 
 
-        return reply
 
-
-
-    if store is None or not _user_expects_files(user_text, store, chat_id):
 
 
 
         return reply
+
+
+
+
+
+
+
+    if store is None:
+        return reply
+    if not _user_expects_files(user_text, store, chat_id):
+        return reply
+    # Hard guard: never append the 'file belum sampai' catatan on turns where
+    # the user's text itself has no file/deliverable intent. The 'expected'
+    # signal came from a previous follow-up; the agent replying to a
+    # conversation/clarification turn is not a delivery failure. If the
+    # user only said 'cek drive D' (no file/deliverable word) AND the
+    # current text isn't a bare 'iya' after a file proposal, skip.
+    user_has_file_intent = bool(_FILE_TASK_RE.search(user_text or ""))
+    is_confirm_only = bool(_CONFIRM_RE.match((user_text or "").strip()))
+    if not user_has_file_intent and not is_confirm_only:
+        return reply
+
+
+
+
 
 
 
@@ -582,7 +1167,15 @@ def _guard_file_claims(reply: str, ctx: ToolContext,
 
 
 
+
+
+
+
         return (f"{reply}\n\n"
+
+
+
+
 
 
 
@@ -590,7 +1183,15 @@ def _guard_file_claims(reply: str, ctx: ToolContext,
 
 
 
+
+
+
+
                 "yang ter-queue. Pembuatan/pengiriman mungkin gagal — coba lagi "
+
+
+
+
 
 
 
@@ -598,7 +1199,15 @@ def _guard_file_claims(reply: str, ctx: ToolContext,
 
 
 
+
+
+
+
     claims_sent = bool(_FILE_SENT_RE.search(reply))
+
+
+
+
 
 
 
@@ -606,7 +1215,15 @@ def _guard_file_claims(reply: str, ctx: ToolContext,
 
 
 
+
+
+
+
     claims_now = bool(re.search(
+
+
+
+
 
 
 
@@ -614,7 +1231,15 @@ def _guard_file_claims(reply: str, ctx: ToolContext,
 
 
 
+
+
+
+
         r"\d+\s+file\s+sudah\s+dikirim|sudah\s+jalan.*kirim|"
+
+
+
+
 
 
 
@@ -622,7 +1247,15 @@ def _guard_file_claims(reply: str, ctx: ToolContext,
 
 
 
+
+
+
+
         reply, re.I))
+
+
+
+
 
 
 
@@ -630,7 +1263,15 @@ def _guard_file_claims(reply: str, ctx: ToolContext,
 
 
 
+
+
+
+
         return reply
+
+
+
+
 
 
 
@@ -638,11 +1279,23 @@ def _guard_file_claims(reply: str, ctx: ToolContext,
 
 
 
+
+
+
+
             "⚠️ Catatan sistem: tidak ada file yang dibuat/dikirim pada giliran "
 
 
 
+
+
+
+
             "ini (create_document/send_file tidak dipanggil). File belum sampai "
+
+
+
+
 
 
 
@@ -658,7 +1311,23 @@ def _guard_file_claims(reply: str, ctx: ToolContext,
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 class Agent:
+
+
+
+
 
 
 
@@ -666,7 +1335,15 @@ class Agent:
 
 
 
+
+
+
+
         self.store = store or Store()
+
+
+
+
 
 
 
@@ -674,7 +1351,15 @@ class Agent:
 
 
 
+
+
+
+
         self._bg_thread = None
+
+
+
+
 
 
 
@@ -682,7 +1367,15 @@ class Agent:
 
 
 
+
+
+
+
         # Set by the interface (e.g. TelegramBot):
+
+
+
+
 
 
 
@@ -690,7 +1383,15 @@ class Agent:
 
 
 
+
+
+
+
         #   file_notifier(chat_id, path)   — files produced by scheduled tasks
+
+
+
+
 
 
 
@@ -698,7 +1399,15 @@ class Agent:
 
 
 
+
+
+
+
         self.notifier = None
+
+
+
+
 
 
 
@@ -706,7 +1415,19 @@ class Agent:
 
 
 
+
+
+
+
         self.activity_notifier = None
+
+
+
+
+
+
+
+
 
 
 
@@ -722,7 +1443,19 @@ class Agent:
 
 
 
+
+
+
+
+
+
+
+
     def handle_message(self, chat_id: str, user_text: str, images: list = None):
+
+
+
+
 
 
 
@@ -730,7 +1463,15 @@ class Agent:
 
 
 
+
+
+
+
         images: paths of images attached to this turn (vision)."""
+
+
+
+
 
 
 
@@ -738,7 +1479,15 @@ class Agent:
 
 
 
+
+
+
+
         nudged = _inject_execution_nudge(user_text, self.store, chat_id)
+
+
+
+
 
 
 
@@ -746,7 +1495,15 @@ class Agent:
 
 
 
+
+
+
+
         # FS preflight: inject real list_dir output for drive/folder queries
+
+
+
+
 
 
 
@@ -754,7 +1511,15 @@ class Agent:
 
 
 
+
+
+
+
         fs_note = _fs_preflight(nudged)
+
+
+
+
 
 
 
@@ -762,7 +1527,15 @@ class Agent:
 
 
 
+
+
+
+
             messages.append({"role": "user", "content": fs_note})
+
+
+
+
 
 
 
@@ -770,7 +1543,15 @@ class Agent:
 
 
 
+
+
+
+
         if images:
+
+
+
+
 
 
 
@@ -778,7 +1559,15 @@ class Agent:
 
 
 
+
+
+
+
         activity = None
+
+
+
+
 
 
 
@@ -786,7 +1575,15 @@ class Agent:
 
 
 
+
+
+
+
             activity = lambda text: self.activity_notifier(chat_id, text)  # noqa: E731
+
+
+
+
 
 
 
@@ -794,7 +1591,15 @@ class Agent:
 
 
 
+
+
+
+
         if self.file_notifier is not None:
+
+
+
+
 
 
 
@@ -802,7 +1607,15 @@ class Agent:
 
 
 
+
+
+
+
         ctx = ToolContext(self.store, chat_id, activity=activity, file_notifier=file_cb)
+
+
+
+
 
 
 
@@ -810,7 +1623,15 @@ class Agent:
 
 
 
+
+
+
+
             reply = llm.chat(system, messages, ctx=ctx)
+
+
+
+
 
 
 
@@ -818,7 +1639,15 @@ class Agent:
 
 
 
+
+
+
+
                 log.info("stall detected on file task — retrying with execution nudge")
+
+
+
+
 
 
 
@@ -826,7 +1655,15 @@ class Agent:
 
 
 
+
+
+
+
                 messages.append({"role": "user", "content": _EXECUTION_NUDGE.strip()})
+
+
+
+
 
 
 
@@ -834,7 +1671,15 @@ class Agent:
 
 
 
+
+
+
+
         except Exception as exc:
+
+
+
+
 
 
 
@@ -842,7 +1687,15 @@ class Agent:
 
 
 
+
+
+
+
             reply = f"⚠️ Gagal: {llm.describe_error(exc)}."
+
+
+
+
 
 
 
@@ -850,11 +1703,23 @@ class Agent:
 
 
 
+
+
+
+
                 reply += ("\nFile yang sempat dibuat tetap saya kirim di bawah.")
 
 
 
+
+
+
+
         reply = _guard_file_claims(reply, ctx, user_text, self.store, chat_id)
+
+
+
+
 
 
 
@@ -866,7 +1731,19 @@ class Agent:
 
 
 
+
+
+
+
+
+
+
+
         # Inline trigger: consolidate when enough raw experience has piled up,
+
+
+
+
 
 
 
@@ -874,11 +1751,27 @@ class Agent:
 
 
 
+
+
+
+
         if self.store.unprocessed_count() >= config.CONSOLIDATE_EVERY_N_EVENTS:
 
 
 
+
+
+
+
             threading.Thread(target=self._safe_consolidate, daemon=True).start()
+
+
+
+
+
+
+
+
 
 
 
@@ -894,7 +1787,23 @@ class Agent:
 
 
 
+
+
+
+
+
+
+
+
     # ---------------- background sleep cycle ----------------
+
+
+
+
+
+
+
+
 
 
 
@@ -906,7 +1815,15 @@ class Agent:
 
 
 
+
+
+
+
         self._bg_thread = threading.Thread(target=self._loop, daemon=True)
+
+
+
+
 
 
 
@@ -914,7 +1831,15 @@ class Agent:
 
 
 
+
+
+
+
         self._scheduler_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
+
+
+
+
 
 
 
@@ -926,7 +1851,19 @@ class Agent:
 
 
 
+
+
+
+
+
+
+
+
     def stop(self):
+
+
+
+
 
 
 
@@ -938,7 +1875,19 @@ class Agent:
 
 
 
+
+
+
+
+
+
+
+
     def _scheduler_loop(self):
+
+
+
+
 
 
 
@@ -946,7 +1895,15 @@ class Agent:
 
 
 
+
+
+
+
         Failures leave the item pending/active so it retries next tick."""
+
+
+
+
 
 
 
@@ -954,7 +1911,15 @@ class Agent:
 
 
 
+
+
+
+
             if self.notifier is None:
+
+
+
+
 
 
 
@@ -962,7 +1927,15 @@ class Agent:
 
 
 
+
+
+
+
             for r in self.store.due_reminders():
+
+
+
+
 
 
 
@@ -970,7 +1943,15 @@ class Agent:
 
 
 
+
+
+
+
                     self.notifier(r["chat_id"], f"⏰ Pengingat: {r['message']}")
+
+
+
+
 
 
 
@@ -978,7 +1959,15 @@ class Agent:
 
 
 
+
+
+
+
                     log.exception("failed to deliver reminder #%s", r["id"])
+
+
+
+
 
 
 
@@ -986,7 +1975,15 @@ class Agent:
 
 
 
+
+
+
+
                 self.store.set_reminder_status(r["id"], "sent")
+
+
+
+
 
 
 
@@ -994,11 +1991,23 @@ class Agent:
 
 
 
+
+
+
+
                                      f"(reminder delivered) {r['message']}", r["chat_id"])
 
 
 
+
+
+
+
             for t in self.store.due_tasks():
+
+
+
+
 
 
 
@@ -1010,7 +2019,19 @@ class Agent:
 
 
 
+
+
+
+
+
+
+
+
     def _run_task(self, task):
+
+
+
+
 
 
 
@@ -1018,7 +2039,15 @@ class Agent:
 
 
 
+
+
+
+
         deliver the result. Proactive autonomy: the agent works unprompted."""
+
+
+
+
 
 
 
@@ -1026,7 +2055,15 @@ class Agent:
 
 
 
+
+
+
+
         try:
+
+
+
+
 
 
 
@@ -1034,7 +2071,15 @@ class Agent:
 
 
 
+
+
+
+
                 task["chat_id"],
+
+
+
+
 
 
 
@@ -1042,7 +2087,15 @@ class Agent:
 
 
 
+
+
+
+
                 f"hasilnya] {task['prompt']}")
+
+
+
+
 
 
 
@@ -1050,7 +2103,15 @@ class Agent:
 
 
 
+
+
+
+
             if self.file_notifier:
+
+
+
+
 
 
 
@@ -1058,7 +2119,15 @@ class Agent:
 
 
 
+
+
+
+
                 for path in files:
+
+
+
+
 
 
 
@@ -1066,7 +2135,15 @@ class Agent:
 
 
 
+
+
+
+
                         failed.append(os.path.basename(path))
+
+
+
+
 
 
 
@@ -1074,7 +2151,15 @@ class Agent:
 
 
 
+
+
+
+
                     self.notifier(
+
+
+
+
 
 
 
@@ -1082,7 +2167,15 @@ class Agent:
 
 
 
+
+
+
+
                         "⚠️ Gagal kirim file: " + ", ".join(failed))
+
+
+
+
 
 
 
@@ -1090,7 +2183,15 @@ class Agent:
 
 
 
+
+
+
+
             log.exception("scheduled task #%s failed; will retry next tick", task["id"])
+
+
+
+
 
 
 
@@ -1098,7 +2199,15 @@ class Agent:
 
 
 
+
+
+
+
         self.store.complete_task_run(
+
+
+
+
 
 
 
@@ -1110,7 +2219,19 @@ class Agent:
 
 
 
+
+
+
+
+
+
+
+
     def _loop(self):
+
+
+
+
 
 
 
@@ -1118,7 +2239,15 @@ class Agent:
 
 
 
+
+
+
+
         cycles = 0
+
+
+
+
 
 
 
@@ -1126,7 +2255,15 @@ class Agent:
 
 
 
+
+
+
+
             self._safe_consolidate()
+
+
+
+
 
 
 
@@ -1134,7 +2271,15 @@ class Agent:
 
 
 
+
+
+
+
             if cycles % 4 == 0:  # reflect roughly every 4th consolidation pass
+
+
+
+
 
 
 
@@ -1142,7 +2287,15 @@ class Agent:
 
 
 
+
+
+
+
             if cycles % 6 == 0:  # mine for new skills less often — high bar
+
+
+
+
 
 
 
@@ -1154,7 +2307,19 @@ class Agent:
 
 
 
+
+
+
+
+
+
+
+
     def _safe_consolidate(self):
+
+
+
+
 
 
 
@@ -1162,7 +2327,15 @@ class Agent:
 
 
 
+
+
+
+
             stats = consolidator.consolidate(self.store)
+
+
+
+
 
 
 
@@ -1170,11 +2343,23 @@ class Agent:
 
 
 
+
+
+
+
                 log.info("consolidated %s", stats)
 
 
 
+
+
+
+
         except Exception:
+
+
+
+
 
 
 
@@ -1186,7 +2371,19 @@ class Agent:
 
 
 
+
+
+
+
+
+
+
+
     def _safe_reflect(self):
+
+
+
+
 
 
 
@@ -1194,7 +2391,15 @@ class Agent:
 
 
 
+
+
+
+
             insights = consolidator.reflect(self.store)
+
+
+
+
 
 
 
@@ -1202,11 +2407,23 @@ class Agent:
 
 
 
+
+
+
+
                 log.info("generated %d insight(s)", len(insights))
 
 
 
+
+
+
+
         except Exception:
+
+
+
+
 
 
 
@@ -1218,7 +2435,19 @@ class Agent:
 
 
 
+
+
+
+
+
+
+
+
     def _safe_mine(self):
+
+
+
+
 
 
 
@@ -1226,7 +2455,15 @@ class Agent:
 
 
 
+
+
+
+
             for draft in skill_compiler.mine(self.store):
+
+
+
+
 
 
 
@@ -1234,7 +2471,15 @@ class Agent:
 
 
 
+
+
+
+
                     self.notifier(
+
+
+
+
 
 
 
@@ -1242,7 +2487,15 @@ class Agent:
 
 
 
+
+
+
+
                         f"💡 Saya menyusun draft skill baru dari pengalaman kita: "
+
+
+
+
 
 
 
@@ -1250,7 +2503,15 @@ class Agent:
 
 
 
+
+
+
+
                         f"Alasan: {draft['rationale']}\n"
+
+
+
+
 
 
 
@@ -1258,11 +2519,23 @@ class Agent:
 
 
 
+
+
+
+
         except Exception:
 
 
 
+
+
+
+
             log.exception("skill mining failed")
+
+
+
+
 
 
 
