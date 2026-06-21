@@ -925,6 +925,7 @@ def _build_pptx(target, title, sections, table, chart=None):
         from pptx import Presentation
         from pptx.dml.color import RGBColor
         from pptx.enum.shapes import MSO_SHAPE
+        from pptx.enum.text import MSO_AUTO_SIZE
         from pptx.util import Inches, Pt
     except ImportError:
         # Zero-dependency fallback — a valid .pptx, plainer styling. PPTX must
@@ -986,6 +987,9 @@ def _build_pptx(target, title, sections, table, chart=None):
     sub = textframe(slide, 1.0, 4.4, 11.6, 0.6)
     rich(sub.paragraphs[0], date.today().strftime("%d %B %Y"), 16, gray)
 
+    light = RGBColor.from_string(_LIGHT)
+    white = RGBColor.from_string("FFFFFF")
+
     def content_slide(heading):
         slide = prs.slides.add_slide(blank)
         bar(slide, 0, 0, 13.333, 0.12, accent)
@@ -993,38 +997,61 @@ def _build_pptx(target, title, sections, table, chart=None):
         rich(htf.paragraphs[0], _plain(heading), 28, primary, bold=True)
         return slide
 
-    max_lines = 8
+    def _draw_table(slide, rows):
+        n_rows = len(rows)
+        n_cols = max(len(r) for r in rows)
+        height = Inches(min(0.5 * n_rows + 0.2, 5.6))
+        tbl = slide.shapes.add_table(
+            n_rows, n_cols, Inches(0.6), Inches(1.5),
+            Inches(12.1), height).table
+        for ri, row in enumerate(rows):
+            for ci in range(n_cols):
+                cell = tbl.cell(ri, ci)
+                cell.text = _plain(row[ci]) if ci < len(row) else ""
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = (
+                    primary if ri == 0 else (light if ri % 2 == 0 else white))
+                for par in cell.text_frame.paragraphs:
+                    for run in par.runs:
+                        run.font.size = Pt(13 if ri == 0 else 12)
+                        run.font.bold = ri == 0
+                        run.font.color.rgb = white if ri == 0 else body_color
+
+    def table_slide(heading, rows):
+        rows = [r for r in rows if any(str(c).strip() for c in r)]
+        if not rows:
+            return
+        header, data = rows[0], rows[1:]
+        groups = [data[i : i + 13] for i in range(0, len(data), 13)] or [[]]
+        for gi, grp in enumerate(groups):
+            h = heading + (" (lanjutan)" if gi else "")
+            _draw_table(content_slide(h), [header] + grp)
+
+    max_lines = 7
     for s in sections:
-        lines = list(_parse_lines(s.get("body") or ""))
-        chunks = [
-            lines[i : i + max_lines] for i in range(0, len(lines), max_lines)
-        ] or [[]]
+        parsed = list(_parse_lines(s.get("body") or ""))
+        text_items = [x for x in parsed if x[0] not in ("table", "rule")]
+        table_blocks = [x[2] for x in parsed if x[0] == "table"]
+        base_heading = s.get("heading") or _plain(title)
+        if not text_items and not table_blocks:
+            content_slide(base_heading)  # heading-only section
+            continue
+        chunks = [text_items[i : i + max_lines]
+                  for i in range(0, len(text_items), max_lines)]
         counter = 0
         for n, chunk in enumerate(chunks):
-            heading = s.get("heading") or _plain(title)
-            if n:
-                heading += " (lanjutan)"
+            heading = base_heading + (" (lanjutan)" if n else "")
             slide = content_slide(heading)
             tf = textframe(slide, 0.9, 1.6, 11.6, 5.4)
+            tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
             first = True
             for kind, level, text in chunk:
-                if kind == "rule":
-                    continue  # a markdown '---' rule has no place on a slide
                 par = tf.paragraphs[0] if first else tf.add_paragraph()
                 first = False
                 par.space_after = Pt(10)
                 par.level = level
                 if kind == "heading":
                     rich(par, _plain(text), 20, accent, bold=True)
-                    continue
-                if kind == "table" and text:
-                    # No grid on a slide — render rows as clean aligned lines
-                    # (header bold), never the raw '| a | b |' markdown.
-                    for ri, row in enumerate(text):
-                        p = par if ri == 0 else tf.add_paragraph()
-                        p.space_after = Pt(4)
-                        rich(p, "   ".join(_plain(c) for c in row),
-                             14, accent if ri == 0 else body_color, bold=(ri == 0))
                     continue
                 if kind == "number":
                     counter += 1
@@ -1034,47 +1061,10 @@ def _build_pptx(target, title, sections, table, chart=None):
                 else:
                     prefix = ""
                 rich(par, prefix + text, 16 if level else 18, body_color)
+        for rows in table_blocks:
+            table_slide(base_heading, rows)
     if table and table.get("headers"):
-        headers = table["headers"]
-        rows = table.get("rows", [])
-        shown = rows[:12]
-        slide = content_slide("Data")
-        shape = slide.shapes.add_table(
-            len(shown) + 1,
-            len(headers),
-            Inches(0.9),
-            Inches(1.7),
-            Inches(11.5),
-            Inches(0.45 * (len(shown) + 1)),
-        )
-        tbl = shape.table
-        for i, h in enumerate(headers):
-            cell = tbl.cell(0, i)
-            cell.text = _plain(h)
-            cell.fill.solid()
-            cell.fill.fore_color.rgb = primary
-            for par in cell.text_frame.paragraphs:
-                for run in par.runs:
-                    run.font.bold = True
-                    run.font.size = Pt(14)
-                    run.font.color.rgb = RGBColor.from_string("FFFFFF")
-        for r, row in enumerate(shown, start=1):
-            for i, c in enumerate(row[: len(headers)]):
-                cell = tbl.cell(r, i)
-                cell.text = _plain(c)
-                for par in cell.text_frame.paragraphs:
-                    for run in par.runs:
-                        run.font.size = Pt(12)
-                        run.font.color.rgb = body_color
-        if len(rows) > len(shown):
-            note = textframe(slide, 0.9, 6.9, 11.5, 0.4)
-            rich(
-                note.paragraphs[0],
-                f"Menampilkan {len(shown)} dari {len(rows)} baris — lengkapnya "
-                f"di lampiran xlsx.",
-                12,
-                gray,
-            )
+        table_slide("Data", [table["headers"]] + table.get("rows", []))
 
     # Optional chart on its own slide.
     chart_png = _render_chart_png(table, chart, target)

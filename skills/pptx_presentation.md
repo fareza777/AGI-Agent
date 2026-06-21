@@ -2,7 +2,7 @@
 name: pptx_presentation
 description: PowerPoint deck (pptx) on any topic — 6–10 slides with title, content, table, closing. USE WHEN: "buatkan presentasi", "buat slide", "PPT tentang X", "deck untuk pitch". NOT for docx reports (→ docx_report).
 status: active
-version: 2
+version: 3
 ---
 # Presentation (PowerPoint)
 
@@ -17,16 +17,21 @@ When the user asks for a presentasi, slide, deck, PPT, or pitch:
 3. Design the deck as title + sections — **each section becomes one slide**:
    - Slide 1 is generated automatically from `title` (styled title slide).
    - Per section: `heading` = slide title (max ~6 words, punchy).
-   - `body` = 3–6 bullet lines starting with `- ` (max ~12 words each;
-     slides are not documents). Two leading spaces give a sub-bullet,
-     `1. ` lines give numbered steps, `**text**` renders bold.
-   - If a section has more than 8 lines it auto-splits into a
-     "(lanjutan)" slide — better to keep bullets tight instead.
-4. A good deck arc: Masalah/Konteks → Data/Temuan → Opsi/Analisis →
+   - `body` = **3–6 short bullet lines** starting with `- ` (max ~10 words
+     each — ONE idea per bullet; slides are not documents). Two leading
+     spaces give a sub-bullet, `1. ` lines give numbered steps, `**text**`
+     renders bold. Don't paste long paragraphs onto a slide.
+   - If a section has more than ~7 lines it auto-splits into a "(lanjutan)"
+     slide — that usually means the content is too dense; tighten it.
+4. **Tabular or ranked data (e.g. "Top 10", price lists, comparisons) MUST be
+   a table, never a long bullet/numbered list** — a 10-item list crammed on
+   one slide reads tiny and ugly. Put it in the `table {headers, rows}` param,
+   OR write a markdown pipe table in a section `body`:
+   `| Kol1 | Kol2 |` then a `|---|---|` separator then the rows. Both render
+   as a real styled grid slide (colored header, banded rows) and auto-split
+   onto continuation slides when long — no row cap, no manual xlsx needed.
+5. A good deck arc: Masalah/Konteks → Data/Temuan → Opsi/Analisis →
    Rekomendasi → Next Steps.
-5. Numeric comparisons go in `table {headers, rows}` — it renders as a styled
-   table slide (max 12 rows shown; ship the full data as a separate xlsx via
-   another `create_document` call if larger).
 6. Call `create_document` with format `pptx`. Slides are 16:9 with a
    consistent color theme; the file is delivered automatically.
 7. Reply with the slide list (one line per slide) so the user can request
