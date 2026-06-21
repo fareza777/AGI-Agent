@@ -260,6 +260,52 @@ def _guard_file_claims(
 _URL_RE = re.compile(r"https?://([a-z0-9.\-]+)[^\s)>\]]*", re.I)
 
 
+# A reply that presents a directory listing / claims a live FS fetch.
+_FS_LISTING_RE = re.compile(
+    r"(top-level folders?|isi (dari )?(folder|drive|direktori)|"
+    r"daftar (isi |)folder|berhasil di-?fetch|di-?fetch sekarang|"
+    r"folder utama|live[,)] |list_dir\(|├──|└──)",
+    re.I,
+)
+_FS_FORCE_NUDGE = (
+    "[INSTRUKSI SISTEM TEGAS: Anda menampilkan isi folder/drive TANPA "
+    "memanggil list_dir pada giliran ini — itu fabrikasi dan dilarang keras. "
+    "SEKARANG panggil tool list_dir pada path yang dimaksud (mis. "
+    "'G:/My Drive'), lalu tampilkan HANYA nama yang dikembalikan tool, tanpa "
+    "deskripsi/tebakan. Jika path belum jelas, TANYAKAN ke user — jangan "
+    "mengarang nama folder.]"
+)
+
+
+def _fs_fabrication(reply: str, ctx: ToolContext) -> bool:
+    """True when the reply presents a directory listing but no list_dir /
+    search_files actually ran this turn — i.e. the listing is invented."""
+    if getattr(ctx, "fs_calls", 0) > 0:
+        return False
+    if _FS_LISTING_RE.search(reply):
+        return True
+    # A tree of many folder-marker lines with no fs tool call.
+    folderish = sum(
+        1 for ln in reply.splitlines()
+        if ln.rstrip().endswith("\\") or "──" in ln
+    )
+    return folderish >= 4
+
+
+def _guard_fs_claims(reply: str, ctx: ToolContext) -> str:
+    """Replace a fabricated directory listing (no list_dir ran) with an honest
+    correction — never let an invented file tree reach the user as 'live'."""
+    if not _fs_fabrication(reply, ctx):
+        return reply
+    return (
+        "⚠️ Maaf — saya tidak benar-benar membaca folder itu (tidak ada "
+        "pemanggilan list_dir pada giliran ini), jadi daftar apa pun yang "
+        "sempat saya susun TIDAK valid dan saya batalkan. Beri tahu path "
+        "persisnya (mis. `G:/My Drive`) dan saya akan list_dir sungguhan lalu "
+        "tampilkan isinya apa adanya."
+    )
+
+
 def _guard_unsourced_links(reply: str, ctx: ToolContext) -> str:
     """Grounding guard: flag URLs in the reply whose domain never appeared in
     any tool result this turn — the classic 'invented a plausible-looking
@@ -365,11 +411,22 @@ class Agent:
                     )
                 messages.append({"role": "user", "content": escalation})
                 reply = llm.chat(system, messages, ctx=ctx)
+            # The model presented a directory listing without ever calling
+            # list_dir — force it to actually fetch instead of inventing.
+            for attempt in range(2):
+                if not _fs_fabrication(reply, ctx):
+                    break
+                log.info("fs fabrication detected — forcing list_dir, attempt %d",
+                         attempt + 1)
+                messages.append({"role": "assistant", "content": reply})
+                messages.append({"role": "user", "content": _FS_FORCE_NUDGE})
+                reply = llm.chat(system, messages, ctx=ctx)
         except Exception as exc:
             log.exception("chat model call failed")
             reply = f"⚠️ Gagal: {llm.describe_error(exc)}."
             if ctx.produced_files:
                 reply += "\nFile yang sempat dibuat tetap saya kirim di bawah."
+        reply = _guard_fs_claims(reply, ctx)
         reply = _guard_file_claims(reply, ctx, user_text, self.store, chat_id)
         reply = _guard_unsourced_links(reply, ctx)
         self.store.log_event("agent", "message", reply, chat_id)

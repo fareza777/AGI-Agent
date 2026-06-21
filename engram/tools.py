@@ -70,6 +70,9 @@ class ToolContext:
         self.tool_output = []
         # Grounding tools (web_search / fetch_url / recall) that ran this turn.
         self.grounding_calls = 0
+        # Filesystem listing tools (list_dir / search_files) that ran this turn.
+        # Used to catch a fabricated directory listing the model never fetched.
+        self.fs_calls = 0
         # Optional callable(text): live activity feed shown in the chat.
         self.activity = activity
         # Optional callable(path) -> bool: deliver file immediately when ready.
@@ -431,6 +434,8 @@ def run_tool(name: str, args: dict, ctx: ToolContext) -> str:
         ctx.tool_output.append(result[:6000])
         if name in ("web_search", "fetch_url", "recall"):
             ctx.grounding_calls += 1
+        if name in ("list_dir", "search_files"):
+            ctx.fs_calls += 1
     if isinstance(result, str) and result.startswith("ERROR"):
         # Surface failures in the live feed too — the user must never be told
         # "sudah dikirim" while a ❌ was silently swallowed.
