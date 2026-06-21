@@ -663,9 +663,16 @@ def _create_document(args, ctx):
     if not args.get("sections") and not args.get("source_path"):
         return ("ERROR: provide sections OR source_path (for long reports: "
                 "write_file .md first, then create_document with source_path).")
+    # Weaker models pass structured args as JSON strings — accept both, or the
+    # generator crashes with 'str has no attribute get' and the user, expecting
+    # a file, silently gets nothing.
+    sections = _coerce_json(args.get("sections", []), list)
+    table = args.get("table")
+    if table is not None:
+        table = _coerce_json(table, dict) or None
     p = desktop.create_document(
         filename=args["filename"], doc_format=args["format"], title=args["title"],
-        sections=args.get("sections", []), table=args.get("table"),
+        sections=sections, table=table,
         source_path=args.get("source_path"))
     if not p.is_file() or p.stat().st_size == 0:
         return "ERROR: document file was not created"
