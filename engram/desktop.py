@@ -310,6 +310,7 @@ def create_document(
     table: dict = None,
     source_path: str = None,
     chart: dict = None,
+    theme: str = None,
 ) -> Path:
     """Create a document in the workspace.
 
@@ -357,7 +358,10 @@ def create_document(
             "headers": [_unescape(h) for h in table.get("headers", [])],
             "rows": [[_unescape(c) for c in row] for row in table.get("rows", [])],
         }
-    builder(target, title, sections, table, chart)
+    if fmt == "pptx":
+        builder(target, title, sections, table, chart, theme=theme)
+    else:
+        builder(target, title, sections, table, chart)
     return target
 
 
@@ -524,6 +528,17 @@ _ACCENT = "2E74B5"  # medium blue — secondary headings, rules
 _LIGHT = "DCE6F1"  # light blue — banded table rows
 _GRAY = "595959"  # subtitles, footers
 _BODY_COLOR = "262626"
+
+# Selectable PPTX colour themes (primary, accent, light band, body text). The
+# default mirrors the docx palette; the rest give decks a distinct designed look.
+_PPTX_THEMES = {
+    "midnight": {"primary": "1F3864", "accent": "2E74B5", "light": "DCE6F1", "body": "262626"},
+    "emerald":  {"primary": "0B5345", "accent": "16A085", "light": "D5F5E3", "body": "1B2631"},
+    "sunset":   {"primary": "7B241C", "accent": "E67E22", "light": "FDEBD0", "body": "2C2C2C"},
+    "slate":    {"primary": "2C3E50", "accent": "5499C7", "light": "EBEDEF", "body": "212121"},
+    "violet":   {"primary": "4A235A", "accent": "8E44AD", "light": "EBDEF0", "body": "2C2C2C"},
+}
+_PPTX_DEFAULT_THEME = "midnight"
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _NUM_LINE = re.compile(r"^\d+[.)]\s+")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
@@ -920,7 +935,7 @@ def _build_xlsx(target, title, sections, table, chart=None):
     wb.save(str(target))
 
 
-def _build_pptx(target, title, sections, table, chart=None):
+def _build_pptx(target, title, sections, table, chart=None, theme=None):
     try:
         from pptx import Presentation
         from pptx.dml.color import RGBColor
@@ -934,14 +949,19 @@ def _build_pptx(target, title, sections, table, chart=None):
 
         docgen.minimal_pptx(target, title, sections, table)
         return
+    pal = _PPTX_THEMES.get(str(theme or "").lower(), _PPTX_THEMES[_PPTX_DEFAULT_THEME])
     prs = Presentation()
     prs.slide_width = Inches(13.333)  # 16:9
     prs.slide_height = Inches(7.5)
     blank = prs.slide_layouts[6]
-    primary = RGBColor.from_string(_PRIMARY)
-    accent = RGBColor.from_string(_ACCENT)
+    primary = RGBColor.from_string(pal["primary"])
+    accent = RGBColor.from_string(pal["accent"])
     gray = RGBColor.from_string(_GRAY)
-    body_color = RGBColor.from_string(_BODY_COLOR)
+    body_color = RGBColor.from_string(pal["body"])
+    light = RGBColor.from_string(pal["light"])
+    white = RGBColor.from_string("FFFFFF")
+    deck_title = _plain(title)
+    page_no = [1]  # title slide is 1; content slides stamp a footer
 
     def bar(slide, x, y, w, h, color):
         shape = slide.shapes.add_shape(
@@ -978,23 +998,34 @@ def _build_pptx(target, title, sections, table, chart=None):
             run.font.bold = bold
             run.font.color.rgb = color
 
-    # ----- title slide -----
+    # ----- title slide: full-bleed colour cover -----
     slide = prs.slides.add_slide(blank)
-    bar(slide, 0, 0, 0.3, 7.5, primary)
-    bar(slide, 0.3, 0, 0.07, 7.5, accent)
-    tf = textframe(slide, 1.0, 2.7, 11.6, 1.8)
-    rich(tf.paragraphs[0], _plain(title), 40, primary, bold=True)
-    sub = textframe(slide, 1.0, 4.4, 11.6, 0.6)
-    rich(sub.paragraphs[0], date.today().strftime("%d %B %Y"), 16, gray)
-
-    light = RGBColor.from_string(_LIGHT)
-    white = RGBColor.from_string("FFFFFF")
+    bar(slide, 0, 0, 13.333, 7.5, primary)          # cover
+    bar(slide, 0.9, 1.7, 1.6, 0.14, accent)         # accent tick above title
+    tf = textframe(slide, 0.85, 2.5, 11.6, 2.2)
+    rich(tf.paragraphs[0], deck_title, 40, white, bold=True)
+    sub = textframe(slide, 0.9, 4.9, 11.6, 0.6)
+    rich(sub.paragraphs[0], date.today().strftime("%d %B %Y"), 18, light)
+    if config.BRAND_LOGO and os.path.isfile(config.BRAND_LOGO):
+        try:
+            slide.shapes.add_picture(config.BRAND_LOGO, Inches(11.6), Inches(0.6),
+                                     height=Inches(0.9))
+        except Exception:
+            pass  # a bad logo must never break deck generation
 
     def content_slide(heading):
         slide = prs.slides.add_slide(blank)
-        bar(slide, 0, 0, 13.333, 0.12, accent)
-        htf = textframe(slide, 0.6, 0.45, 12.1, 0.9)
-        rich(htf.paragraphs[0], _plain(heading), 28, primary, bold=True)
+        bar(slide, 0, 0, 13.333, 1.15, primary)     # filled heading band
+        bar(slide, 0, 1.15, 13.333, 0.07, accent)   # accent underline
+        htf = textframe(slide, 0.7, 0.3, 11.4, 0.7)
+        rich(htf.paragraphs[0], _plain(heading), 26, white, bold=True)
+        # footer: deck title (left) + page number (right)
+        page_no[0] += 1
+        bar(slide, 0, 7.28, 13.333, 0.03, light)
+        ftf = textframe(slide, 0.6, 7.05, 9.0, 0.3)
+        rich(ftf.paragraphs[0], deck_title, 9, gray)
+        pnf = textframe(slide, 12.2, 7.05, 1.0, 0.3)
+        rich(pnf.paragraphs[0], str(page_no[0]), 9, gray)
         return slide
 
     def _draw_table(slide, rows):
@@ -1053,14 +1084,20 @@ def _build_pptx(target, title, sections, table, chart=None):
                 if kind == "heading":
                     rich(par, _plain(text), 20, accent, bold=True)
                     continue
-                if kind == "number":
-                    counter += 1
-                    prefix = f"{counter}.  "
-                elif kind == "bullet":
-                    prefix = "–  " if level else "•  "
+                if kind in ("bullet", "number"):
+                    if kind == "number":
+                        counter += 1
+                        marker = f"{counter}.  "
+                    else:
+                        marker = "▪  " if level else "●  "
+                    mk = par.add_run()
+                    mk.text = marker
+                    mk.font.size = Pt(14 if level else 16)
+                    mk.font.bold = True
+                    mk.font.color.rgb = accent  # accent-coloured marker
+                    rich(par, text, 16 if level else 18, body_color)
                 else:
-                    prefix = ""
-                rich(par, prefix + text, 16 if level else 18, body_color)
+                    rich(par, text, 18, body_color)
         for rows in table_blocks:
             table_slide(base_heading, rows)
     if table and table.get("headers"):

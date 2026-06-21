@@ -32,7 +32,11 @@ When the user asks for a presentasi, slide, deck, PPT, or pitch:
    onto continuation slides when long — no row cap, no manual xlsx needed.
 5. A good deck arc: Masalah/Konteks → Data/Temuan → Opsi/Analisis →
    Rekomendasi → Next Steps.
-6. Call `create_document` with format `pptx`. Slides are 16:9 with a
-   consistent color theme; the file is delivered automatically.
+6. Call `create_document` with format `pptx`. Slides are 16:9 and designed:
+   a full-colour title cover, a filled heading band per slide, accent bullet
+   markers, footer page numbers, and real styled tables. Pick a `theme` that
+   fits the topic — `midnight` (default, corporate blue), `emerald` (green,
+   finance/growth), `sunset` (warm orange), `slate` (neutral grey), or
+   `violet` (creative). The file is delivered automatically.
 7. Reply with the slide list (one line per slide) so the user can request
    changes fast. Offer a docx handout version of the same content.

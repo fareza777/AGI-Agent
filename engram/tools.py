@@ -281,7 +281,11 @@ def tool_specs() -> list:
                                            "description": "0-based column for labels"},
                              "value_col": {"type": "integer",
                                            "description": "0-based numeric column"},
-                             "title": {"type": "string"}}}},
+                             "title": {"type": "string"}}},
+               "theme": {"type": "string",
+                         "enum": ["midnight", "emerald", "sunset", "slate", "violet"],
+                         "description": "pptx colour theme (default midnight). "
+                         "Pick one that fits the topic for a designed look."}},
               ["filename", "format", "title"]),
         _spec("send_file",
               "Send an existing workspace file to the user (e.g. one you wrote "
@@ -767,7 +771,7 @@ def _create_document(args, ctx):
     p = desktop.create_document(
         filename=args["filename"], doc_format=args["format"], title=args["title"],
         sections=sections, table=table, chart=chart,
-        source_path=args.get("source_path"))
+        source_path=args.get("source_path"), theme=args.get("theme"))
     if not p.is_file() or p.stat().st_size == 0:
         return "ERROR: document file was not created"
     ctx.deliver_file(p)
