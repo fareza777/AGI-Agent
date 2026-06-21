@@ -15,3 +15,7 @@ reportlab>=4.0.0
 # Charts embedded into documents (bar/line/pie). Optional: without it, docs are
 # generated normally, just without the chart image.
 matplotlib>=3.7.0
+# Read text from PDFs the user sends ("ringkas PDF ini"). Optional: without it,
+# read_file tells you to install it when handed a PDF (docx/xlsx/pptx reading
+# reuses python-docx/openpyxl/python-pptx above).
+pypdf>=4.0.0

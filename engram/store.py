@@ -362,6 +362,63 @@ class Store:
                 (chat_id, status),
             ).fetchall()
 
+    # ---------------- memory maintenance (sleep-cycle hygiene) ----------------
+
+    def maintain_memory(self, decay_days: int = 30, decay_factor: float = 0.9,
+                        floor: float = 0.15, backfill_limit: int = 32) -> dict:
+        """Keep the belief store healthy:
+          - decay 'insight' claims (hypotheses) not refreshed in `decay_days`,
+          - retire any active claim whose confidence fell below `floor`,
+          - backfill embeddings for claims that lack them (when enabled).
+        Facts/preferences are NOT decayed by age — a fact stays true until
+        contradicted. Returns counts for logging."""
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(days=decay_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        decayed = retired = 0
+        with self._lock:
+            stale = self._conn.execute(
+                "SELECT id, confidence FROM claims WHERE valid_to IS NULL "
+                "AND kind='insight' AND valid_from < ?", (cutoff,),
+            ).fetchall()
+            for r in stale:
+                new_conf = round(r["confidence"] * decay_factor, 4)
+                self._conn.execute("UPDATE claims SET confidence=? WHERE id=?",
+                                   (new_conf, r["id"]))
+                decayed += 1
+            cur = self._conn.execute(
+                "UPDATE claims SET valid_to=? WHERE valid_to IS NULL AND confidence < ?",
+                (now_iso(), floor),
+            )
+            retired = cur.rowcount
+            self._conn.commit()
+        backfilled = self._backfill_embeddings(backfill_limit)
+        return {"decayed": decayed, "retired": retired, "backfilled": backfilled}
+
+    def _backfill_embeddings(self, limit: int) -> int:
+        from . import embeddings
+
+        if not embeddings.available():
+            return 0
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, subject, predicate, value FROM claims "
+                "WHERE valid_to IS NULL AND embedding IS NULL LIMIT ?", (limit,),
+            ).fetchall()
+        done = 0
+        for r in rows:
+            try:
+                vec = embeddings.embed(f"{r['subject']} {r['predicate']} {r['value']}")
+                if not vec:
+                    continue
+                with self._lock:
+                    self._conn.execute("UPDATE claims SET embedding=? WHERE id=?",
+                                       (embeddings.pack(vec), r["id"]))
+                    self._conn.commit()
+                done += 1
+            except Exception:
+                break  # endpoint hiccup — try again next maintenance pass
+        return done
+
     # ---------------- reminders (scheduled messages) ----------------
 
     def add_reminder(self, chat_id: str, due_ts: str, message: str) -> int:

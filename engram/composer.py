@@ -307,8 +307,22 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
         "actually calling the tool first.\n"
         f"{roots}"
     )
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC (%A)")
-    tail.append(f"Current time: {now}")
+    now_utc = datetime.now(timezone.utc)
+    time_line = f"Current time: {now_utc.strftime('%Y-%m-%d %H:%M UTC (%A)')}"
+    tz = store.get_meta(f"tz_{chat_id}")
+    if tz:
+        try:
+            from zoneinfo import ZoneInfo
+
+            local = now_utc.astimezone(ZoneInfo(tz))
+            time_line += (
+                f" | Waktu lokal pengguna: {local.strftime('%Y-%m-%d %H:%M')} "
+                f"({tz}). Saat menjadwalkan reminder/task, tafsirkan jam yang "
+                f"disebut pengguna sebagai waktu lokal ini lalu konversi ke UTC."
+            )
+        except Exception:
+            pass
+    tail.append(time_line)
 
     # Budget left for the dynamic MEMORY sections after head + reserved tail.
     budget = config.MAX_CONTEXT_TOKENS - _est_tokens("\n\n".join(head + tail))

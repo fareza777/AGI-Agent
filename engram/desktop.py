@@ -116,6 +116,15 @@ def read_file(path: str) -> str:
     target = resolve(path, must_exist=True)
     if target.is_dir():
         return f"'{path}' is a directory. Use list_dir."
+    # Office / PDF files are binary — extract their text so the agent can
+    # actually read a docx/xlsx/pdf/pptx the user sent ("ringkas PDF ini").
+    ext = target.suffix.lower()
+    if ext in (".pdf", ".docx", ".xlsx", ".pptx"):
+        extracted = _extract_document_text(target, ext)
+        if extracted is not None:
+            if len(extracted) > config.MAX_FILE_READ_BYTES:
+                extracted = extracted[: config.MAX_FILE_READ_BYTES] + "\n[...truncated]"
+            return extracted
     data = target.read_bytes()[: config.MAX_FILE_READ_BYTES]
     try:
         text = data.decode("utf-8")
@@ -123,6 +132,67 @@ def read_file(path: str) -> str:
         return f"'{path}' is not a UTF-8 text file ({len(data)} bytes read)."
     truncated = target.stat().st_size > config.MAX_FILE_READ_BYTES
     return text + ("\n[...truncated]" if truncated else "")
+
+
+def _extract_document_text(target: Path, ext: str):
+    """Extract readable text from a docx/xlsx/pptx/pdf. Returns the text, or a
+    clear 'pip install' message if the needed library is missing, or None to
+    fall back to raw decoding."""
+    try:
+        if ext == ".docx":
+            from docx import Document
+
+            doc = Document(str(target))
+            parts = [p.text for p in doc.paragraphs if p.text.strip()]
+            for table in doc.tables:
+                for row in table.rows:
+                    cells = [c.text.strip() for c in row.cells]
+                    if any(cells):
+                        parts.append(" | ".join(cells))
+            return "\n".join(parts) or "(dokumen kosong)"
+        if ext == ".xlsx":
+            from openpyxl import load_workbook
+
+            wb = load_workbook(str(target), read_only=True, data_only=True)
+            out = []
+            for ws in wb.worksheets:
+                out.append(f"# Sheet: {ws.title}")
+                for row in ws.iter_rows(values_only=True):
+                    vals = [("" if v is None else str(v)) for v in row]
+                    if any(vals):
+                        out.append(" | ".join(vals))
+            return "\n".join(out) or "(workbook kosong)"
+        if ext == ".pptx":
+            from pptx import Presentation
+
+            prs = Presentation(str(target))
+            out = []
+            for i, slide in enumerate(prs.slides, 1):
+                out.append(f"# Slide {i}")
+                for shape in slide.shapes:
+                    if shape.has_text_frame and shape.text_frame.text.strip():
+                        out.append(shape.text_frame.text)
+            return "\n".join(out) or "(presentasi kosong)"
+        if ext == ".pdf":
+            try:
+                from pypdf import PdfReader
+            except ImportError:
+                try:
+                    from PyPDF2 import PdfReader
+                except ImportError:
+                    return ("ERROR: membaca PDF butuh pypdf — jalankan: "
+                            "pip install pypdf")
+            reader = PdfReader(str(target))
+            pages = [(pg.extract_text() or "") for pg in reader.pages]
+            text = "\n".join(p for p in pages if p.strip())
+            return text or "(PDF tanpa teks terbaca — mungkin hasil scan/gambar)"
+    except ImportError as exc:
+        lib = {".docx": "python-docx", ".xlsx": "openpyxl",
+               ".pptx": "python-pptx"}.get(ext, "library terkait")
+        return f"ERROR: membaca {ext} butuh {lib} ({exc})."
+    except Exception as exc:
+        return f"ERROR: gagal mengekstrak {ext} ({type(exc).__name__}: {exc})."
+    return None
 
 
 def write_file(path: str, content: str) -> Path:

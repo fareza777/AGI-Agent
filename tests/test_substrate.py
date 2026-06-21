@@ -124,6 +124,21 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(all(e["chat_id"] == "A" for e in a))
         self.assertTrue(any("for A" in e["content"] for e in a))
 
+    def test_maintenance_retires_weak_keeps_strong(self):
+        self.store.add_claim("user", "weak", "x", "insight", 0.10, [1], "c1")
+        self.store.add_claim("user", "strong", "y", "fact", 0.9, [2], "c1")
+        stats = self.store.maintain_memory(floor=0.15)
+        self.assertEqual(stats["retired"], 1)
+        preds = {c["predicate"] for c in self.store.active_claims()}
+        self.assertNotIn("weak", preds)
+        self.assertIn("strong", preds)
+
+    def test_local_time_injected_when_tz_set(self):
+        self.store.set_meta("tz_c1", "Asia/Jakarta")
+        system, _ = composer.build_context(self.store, "c1", "ingatkan besok")
+        self.assertIn("Waktu lokal pengguna", system)
+        self.assertIn("Asia/Jakarta", system)
+
     def test_predicate_canonicalization_supersedes(self):
         # Two phrasings of the same attribute must land in one slot so the
         # second supersedes the first instead of creating a duplicate belief.
@@ -586,6 +601,34 @@ class ParseJsonTests(unittest.TestCase):
     def test_json_with_prose(self):
         text = 'Here is the result:\n{"claims": [{"x": 1}]}\nHope that helps!'
         self.assertEqual(parse_json(text), {"claims": [{"x": 1}]})
+
+
+class DocumentReadbackTests(unittest.TestCase):
+    """read_file extracts text from Office documents, not just plain text."""
+
+    def _has(self, mod):
+        try:
+            __import__(mod)
+            return True
+        except ImportError:
+            return False
+
+    def test_read_docx_and_xlsx(self):
+        if not (self._has("docx") and self._has("openpyxl")):
+            self.skipTest("python-docx/openpyxl not installed")
+        from engram import desktop
+        d = desktop.create_document("rb_doc", "docx", "Judul",
+                                    sections=[{"heading": "Bab", "body": "Isi penting."}])
+        x = desktop.create_document("rb_sheet", "xlsx", "Data",
+                                    table={"headers": ["Kota"], "rows": [["Jakarta"]]})
+        try:
+            dt = desktop.read_file(desktop._rel(d))
+            xt = desktop.read_file(desktop._rel(x))
+            self.assertIn("Isi penting.", dt)
+            self.assertIn("Jakarta", xt)
+        finally:
+            d.unlink(missing_ok=True)
+            x.unlink(missing_ok=True)
 
 
 class StripReasoningTests(unittest.TestCase):

@@ -207,7 +207,10 @@ def tool_specs() -> list:
               "List files and folders in your workspace (or an allowed directory).",
               {"path": {"type": "string", "description": "default '.'"}}),
         _spec("read_file",
-              "Read a UTF-8 text file from the workspace / allowed directories.",
+              "Read a file from the workspace / allowed directories. Handles "
+              "plain text AND extracts text from PDF, Word (.docx), Excel "
+              "(.xlsx), and PowerPoint (.pptx) — use it to summarize/analyze a "
+              "document the user sent.",
               {"path": {"type": "string"}}, ["path"]),
         _spec("write_file",
               "Write (create or overwrite) a text file in the workspace.",

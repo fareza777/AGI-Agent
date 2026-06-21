@@ -249,6 +249,7 @@ class TelegramBot:
         ("tasks", "Tugas otomatis terjadwal"),
         ("skills", "Daftar skill (termasuk draft)"),
         ("reflect", "Konsolidasi memori + refleksi sekarang"),
+        ("timezone", "Setel zona waktu untuk reminder"),
         ("doctor", "Cek kesehatan sistem"),
         ("stats", "Statistik memori"),
     ]
@@ -495,8 +496,9 @@ class TelegramBot:
             notes.append(
                 "[Pengguna mengirim file, tersimpan di workspace: "
                 + ", ".join(rel(p) for p in others)
-                + ". Gunakan read_file untuk file teks. Tanggapi sesuai "
-                "konteks.]"
+                + ". Gunakan read_file untuk membacanya — termasuk PDF, "
+                "Word (.docx), Excel (.xlsx), dan PowerPoint (.pptx), bukan "
+                "hanya teks. Tanggapi sesuai konteks.]"
             )
         return "\n".join(notes), [str(p) for p in images]
 
@@ -685,6 +687,27 @@ class TelegramBot:
             )
         elif cmd == "/doctor":
             self.send(chat_id, self._doctor_report(), rich=False)
+        elif cmd == "/timezone":
+            if not arg:
+                cur = self.store.get_meta(f"tz_{chat_id}")
+                self.send(
+                    chat_id,
+                    (f"Zona waktu kamu saat ini: {cur}." if cur
+                     else "Zona waktu belum diset — reminder dihitung dalam UTC.")
+                    + "\nSetel dengan: /timezone Asia/Jakarta "
+                    "(atau Europe/London, America/New_York, dll).",
+                )
+            else:
+                try:
+                    from zoneinfo import ZoneInfo
+                    ZoneInfo(arg.strip())
+                except Exception:
+                    self.send(chat_id, f"Zona waktu '{arg}' tidak dikenal. "
+                              "Pakai format IANA, mis. Asia/Jakarta.")
+                    return
+                self.store.set_meta(f"tz_{chat_id}", arg.strip())
+                self.send(chat_id, f"✅ Zona waktu diset ke {arg.strip()}. "
+                          "Reminder/jadwal sekarang mengikuti waktu lokalmu.")
         elif cmd == "/identity":
             self.send(chat_id, identity.load())
         elif cmd == "/stats":

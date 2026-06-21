@@ -427,6 +427,8 @@ class Agent:
                 self._safe_reflect()
             if cycles % 6 == 0:  # mine for new skills less often — high bar
                 self._safe_mine()
+            if cycles % 8 == 0:  # memory hygiene: decay/prune/backfill embeddings
+                self._safe_maintain()
 
     def _safe_consolidate(self):
         try:
@@ -435,6 +437,14 @@ class Agent:
                 log.info("consolidated %s", stats)
         except Exception:
             log.exception("consolidation failed")
+
+    def _safe_maintain(self):
+        try:
+            stats = self.store.maintain_memory()
+            if any(stats.values()):
+                log.info("memory maintenance %s", stats)
+        except Exception:
+            log.exception("memory maintenance failed")
 
     def _safe_reflect(self):
         try:
