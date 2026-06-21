@@ -30,6 +30,13 @@ When the user asks for a presentasi, slide, deck, PPT, or pitch:
    `| Kol1 | Kol2 |` then a `|---|---|` separator then the rows. Both render
    as a real styled grid slide (colored header, banded rows) and auto-split
    onto continuation slides when long — no row cap, no manual xlsx needed.
+   **Designed layouts that lift a deck to pro level — use them:**
+   - **Stat cards**: a slide of key metrics renders as big number cards when
+     the body is 2–6 lines of `Label: Value` (e.g. `- BTC: $64,195` /
+     `- Dominance: 56.2%`). Far stronger than a plain bullet list for numbers.
+   - **Section divider**: to break the deck into parts, add a section with a
+     `heading` and an EMPTY `body` — it becomes a full-colour divider slide.
+     Use one before each major part (Pasar, Analisa, Rekomendasi).
 5. A good deck arc: Masalah/Konteks → Data/Temuan → Opsi/Analisis →
    Rekomendasi → Next Steps.
 6. Call `create_document` with format `pptx`. Slides are 16:9 and designed:

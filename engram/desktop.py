@@ -935,6 +935,22 @@ def _build_xlsx(target, title, sections, table, chart=None):
     wb.save(str(target))
 
 
+def _pptx_stat_pairs(items):
+    """If a slide body is a short list of 'Label: Value' metric lines (2-6,
+    no sub-headings), return [(label, value), ...] to render as stat cards.
+    Otherwise None (render as normal bullets)."""
+    pairs = []
+    for kind, _level, text in items:
+        if kind not in ("bullet", "text") or ":" not in text:
+            return None
+        label, value = text.split(":", 1)
+        label, value = label.strip(), value.strip()
+        if not label or not value or len(_plain(label)) > 38:
+            return None
+        pairs.append((label, value))
+    return pairs if 2 <= len(pairs) <= 6 else None
+
+
 def _build_pptx(target, title, sections, table, chart=None, theme=None):
     try:
         from pptx import Presentation
@@ -1058,6 +1074,39 @@ def _build_pptx(target, title, sections, table, chart=None, theme=None):
             h = heading + (" (lanjutan)" if gi else "")
             _draw_table(content_slide(h), [header] + grp)
 
+    def divider_slide(heading):
+        # Full-colour section break — heading-only sections become these.
+        slide = prs.slides.add_slide(blank)
+        bar(slide, 0, 0, 13.333, 7.5, primary)
+        bar(slide, 0.9, 3.3, 1.8, 0.13, accent)
+        tf = textframe(slide, 0.9, 3.55, 11.5, 1.7)
+        rich(tf.paragraphs[0], _plain(heading), 34, white, bold=True)
+        page_no[0] += 1
+
+    def stat_card_slide(heading, pairs):
+        slide = content_slide(heading)
+        per_row = min(3, len(pairs))
+        gap, area_x, area_w, ch = 0.3, 0.7, 12.0, 1.7
+        cw = (area_w - gap * (per_row - 1)) / per_row
+        for idx, (label, value) in enumerate(pairs):
+            row, col = divmod(idx, per_row)
+            x = area_x + col * (cw + gap)
+            y = 1.85 + row * (ch + 0.3)
+            card = slide.shapes.add_shape(
+                MSO_SHAPE.ROUNDED_RECTANGLE,
+                Inches(x), Inches(y), Inches(cw), Inches(ch))
+            card.fill.solid()
+            card.fill.fore_color.rgb = light
+            card.line.color.rgb = accent
+            card.line.width = Pt(1)
+            card.shadow.inherit = False
+            ctf = card.text_frame
+            ctf.word_wrap = True
+            ctf.margin_left = ctf.margin_right = Inches(0.18)
+            ctf.margin_top = Inches(0.16)
+            rich(ctf.paragraphs[0], _plain(label).upper(), 11, gray)
+            rich(ctf.add_paragraph(), value, 22, primary, bold=True)
+
     max_lines = 7
     for s in sections:
         parsed = list(_parse_lines(s.get("body") or ""))
@@ -1065,7 +1114,13 @@ def _build_pptx(target, title, sections, table, chart=None, theme=None):
         table_blocks = [x[2] for x in parsed if x[0] == "table"]
         base_heading = s.get("heading") or _plain(title)
         if not text_items and not table_blocks:
-            content_slide(base_heading)  # heading-only section
+            divider_slide(base_heading)  # heading-only section -> section break
+            continue
+        pairs = None if table_blocks else _pptx_stat_pairs(text_items)
+        if pairs:
+            stat_card_slide(base_heading, pairs)
+            for rows in table_blocks:
+                table_slide(base_heading, rows)
             continue
         chunks = [text_items[i : i + max_lines]
                   for i in range(0, len(text_items), max_lines)]
