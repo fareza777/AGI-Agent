@@ -147,6 +147,28 @@ def _client():
     return _anthropic_client
 
 
+def _cache_conversation_prefix(messages: list) -> None:
+    """Keep one ephemeral cache breakpoint on the newest dict-based message
+    block so the tool-loop history is reused across iterations within a turn.
+
+    The system prompt already carries a breakpoint (which also caches the tools
+    block before it). This adds the conversation prefix on top — the part that
+    grows each tool round and was otherwise re-billed in full every iteration.
+    Anthropic allows at most 4 breakpoints, so we move the single conversation
+    one forward rather than accumulating it."""
+    for m in messages:
+        content = m.get("content") if isinstance(m, dict) else None
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    block.pop("cache_control", None)
+    for m in reversed(messages):
+        content = m.get("content") if isinstance(m, dict) else None
+        if isinstance(content, list) and content and isinstance(content[-1], dict):
+            content[-1]["cache_control"] = {"type": "ephemeral"}
+            return
+
+
 def _anthropic_one(messages, params, on_delta):
     """One model call. Streams text deltas to on_delta when given, else a plain
     create. Returns the final message object either way."""
@@ -177,6 +199,7 @@ def _anthropic_chat(system: str, messages: list, max_tokens: int, ctx,
     stream = on_delta is not None and config.STREAM_REPLIES
     messages = _convert_messages(messages, _image_blocks_anthropic)
     for _ in range(config.MAX_TOOL_ITERS):
+        _cache_conversation_prefix(messages)
         response = _anthropic_one(messages, params, on_delta if stream else None)
         usage = getattr(response, "usage", None)
         if usage is not None:

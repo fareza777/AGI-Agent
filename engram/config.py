@@ -90,6 +90,13 @@ ENABLE_CODE_TOOL = os.environ.get("ENGRAM_ENABLE_CODE_TOOL", "0") == "1"
 # caveat — off by default.
 ENABLE_SHELL_TOOL = os.environ.get("ENGRAM_ENABLE_SHELL_TOOL", "0") == "1"
 SHELL_TIMEOUT_SEC = int(os.environ.get("ENGRAM_SHELL_TIMEOUT_SEC", "30"))
+# Owner-only code/shell: expose run_python / run_shell but only let chat IDs in
+# ALLOWED_CHAT_IDS actually execute them. Lets the owner run a write→test→fix
+# loop without opening code execution to everyone who can message the bot.
+# Requires ENGRAM_ALLOWED_CHAT_IDS to be set, otherwise no owner is defined and
+# execution stays blocked for all.
+ENABLE_CODE_TOOL_OWNER = os.environ.get("ENGRAM_ENABLE_CODE_TOOL_OWNER", "0") == "1"
+ENABLE_SHELL_TOOL_OWNER = os.environ.get("ENGRAM_ENABLE_SHELL_TOOL_OWNER", "0") == "1"
 # Git tool mode: 1 = read-only (default, safe), 0 = write also allowed
 # (add, commit, checkout, branch -d, stash, push, fetch). --force,
 # --force-with-lease, reset --hard, clean -fd are blocked in BOTH modes.

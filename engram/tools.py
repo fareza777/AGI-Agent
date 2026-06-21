@@ -11,8 +11,9 @@ is flat text):
   schedule_reminder / list_reminders — future-dated messages the scheduler delivers
 
 Digital-assistant (do things, not just answer — sandboxed to config.ALLOWED_DIRS):
-  list_dir / read_file / write_file / make_dir / move_file / delete_file /
-  search_files — workspace file management
+  list_dir / read_file / write_file / edit_file / make_dir / move_file /
+  delete_file / search_files — workspace file management (edit_file does a
+  surgical search-and-replace instead of overwriting the whole file)
   create_document — generate docx/xlsx/pptx/pdf/md/html/csv and deliver it to the user
   send_file       — deliver an existing workspace file
   git             — read-only repository inspection
@@ -213,9 +214,24 @@ def tool_specs() -> list:
               "document the user sent.",
               {"path": {"type": "string"}}, ["path"]),
         _spec("write_file",
-              "Write (create or overwrite) a text file in the workspace.",
+              "Write (create or overwrite) a text file in the workspace. For "
+              "CHANGING an existing file prefer edit_file — write_file replaces "
+              "the whole file and will clobber anything you don't repeat.",
               {"path": {"type": "string"}, "content": {"type": "string"}},
               ["path", "content"]),
+        _spec("edit_file",
+              "Make a SURGICAL edit to an existing text file: replace an exact "
+              "snippet (old_string) with new_string and leave the rest "
+              "untouched. Prefer this over write_file when changing code or "
+              "config. old_string must match the file EXACTLY (indentation "
+              "included) and be UNIQUE — copy it from read_file output. Set "
+              "replace_all=true to replace every occurrence.",
+              {"path": {"type": "string"},
+               "old_string": {"type": "string", "description": "exact text to find"},
+               "new_string": {"type": "string", "description": "text to replace it with"},
+               "replace_all": {"type": "boolean",
+                               "description": "replace all occurrences (default false)"}},
+              ["path", "old_string", "new_string"]),
         _spec("make_dir", "Create a folder in the workspace.",
               {"path": {"type": "string"}}, ["path"]),
         _spec("move_file", "Move or rename a file within the workspace.",
@@ -306,13 +322,13 @@ def tool_specs() -> list:
                         "description": "e.g. 1024x1024 (default), 1024x1536, 1536x1024"}},
               ["prompt"]),
     ]
-    if config.ENABLE_CODE_TOOL:
+    if config.ENABLE_CODE_TOOL or config.ENABLE_CODE_TOOL_OWNER:
         specs.append(_spec(
             "run_python",
             "Run a short Python script in a subprocess (10s timeout) and return "
             "its stdout/stderr. Use print() for output.",
             {"code": {"type": "string"}}, ["code"]))
-    if config.ENABLE_SHELL_TOOL:
+    if config.ENABLE_SHELL_TOOL or config.ENABLE_SHELL_TOOL_OWNER:
         specs.append(_spec(
             "run_shell",
             "Run a shell command in the workspace directory and return its "
@@ -330,7 +346,29 @@ def openai_tool_specs() -> list:
 
 # ---------------- dispatcher ----------------
 
-_GATED = {"run_python": "ENABLE_CODE_TOOL", "run_shell": "ENABLE_SHELL_TOOL"}
+# (global_flag, owner_flag): a gated tool runs if the global flag is on (anyone),
+# or the owner flag is on AND the chat is in ALLOWED_CHAT_IDS (owner only).
+_GATED = {
+    "run_python": ("ENABLE_CODE_TOOL", "ENABLE_CODE_TOOL_OWNER"),
+    "run_shell": ("ENABLE_SHELL_TOOL", "ENABLE_SHELL_TOOL_OWNER"),
+}
+
+
+def _gate_blocked(name: str, ctx: "ToolContext"):
+    """Return an ERROR string if a gated tool may NOT run for this chat, else None."""
+    gate = _GATED.get(name)
+    if gate is None:
+        return None
+    global_flag, owner_flag = gate
+    if getattr(config, global_flag):
+        return None  # enabled for everyone
+    if getattr(config, owner_flag):
+        if config.ALLOWED_CHAT_IDS and ctx.chat_id in config.ALLOWED_CHAT_IDS:
+            return None
+        return (f"ERROR: '{name}' is restricted to the bot owner — your chat is "
+                "not in ENGRAM_ALLOWED_CHAT_IDS (and owner-only mode needs that "
+                "allowlist set).")
+    return f"ERROR: unknown tool '{name}'"  # not enabled at all
 
 _ICONS = {
     "web_search": "🔎", "fetch_url": "🌐", "calculate": "🧮",
@@ -340,7 +378,7 @@ _ICONS = {
     "schedule_task": "🗓", "list_tasks": "🗓", "cancel_task": "🗓",
     "use_skill": "📚", "create_skill": "📚", "improve_skill": "📚",
     "list_dir": "📁", "make_dir": "📁", "move_file": "📁",
-    "read_file": "📄", "write_file": "✍️", "delete_file": "🗑",
+    "read_file": "📄", "write_file": "✍️", "edit_file": "✏️", "delete_file": "🗑",
     "search_files": "🔍", "create_document": "📝", "send_file": "📤",
     "git": "🔧", "run_python": "🐍", "run_shell": "💻", "view_image": "👁",
     "send_email": "✉️", "generate_image": "🎨",
@@ -370,8 +408,11 @@ _QUIET_ACTIVITY = frozenset({"list_dir", "read_file", "search_files", "recall"})
 
 def run_tool(name: str, args: dict, ctx: ToolContext) -> str:
     handler = _HANDLERS.get(name)
-    if handler is None or (name in _GATED and not getattr(config, _GATED[name])):
+    if handler is None:
         return f"ERROR: unknown tool '{name}'"
+    blocked = _gate_blocked(name, ctx)
+    if blocked is not None:
+        return blocked
     if name in _FILE_DELIVERY_TOOLS:
         ctx.file_tools_called += 1
     if name not in _QUIET_ACTIVITY:
@@ -686,6 +727,11 @@ def _write_file(args, ctx):
     return f"Wrote {desktop._rel(p)} ({p.stat().st_size} bytes)."
 
 
+def _edit_file(args, ctx):
+    return desktop.edit_file(args["path"], args["old_string"], args["new_string"],
+                             bool(args.get("replace_all", False)))
+
+
 def _make_dir(args, ctx):
     p = desktop.make_dir(args["path"])
     return f"Created folder {desktop._rel(p)}."
@@ -811,6 +857,7 @@ _HANDLERS = {
     "list_dir": _list_dir,
     "read_file": _read_file,
     "write_file": _write_file,
+    "edit_file": _edit_file,
     "make_dir": _make_dir,
     "move_file": _move_file,
     "delete_file": _delete_file,

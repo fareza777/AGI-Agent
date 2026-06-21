@@ -201,6 +201,29 @@ def write_file(path: str, content: str) -> Path:
     return target
 
 
+def edit_file(path: str, old: str, new: str, replace_all: bool = False) -> str:
+    """Surgical search-and-replace on an existing text file. Returns a status
+    string (ERROR: ... when the edit can't be applied safely)."""
+    target = resolve(path, must_exist=True)
+    try:
+        text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"ERROR: cannot read {_rel(target)} as text ({type(exc).__name__})."
+    if old == new:
+        return "ERROR: old_string and new_string are identical — nothing to change."
+    count = text.count(old)
+    if count == 0:
+        return (f"ERROR: old_string not found in {_rel(target)}. Read the file "
+                "first and copy an exact snippet (indentation included).")
+    if count > 1 and not replace_all:
+        return (f"ERROR: old_string appears {count} times in {_rel(target)}. Add "
+                "surrounding context to make it unique, or set replace_all=true.")
+    target.write_text(text.replace(old, new), encoding="utf-8")
+    n = count if replace_all else 1
+    return (f"Edited {_rel(target)} ({n} replacement{'s' if n != 1 else ''}, "
+            f"{target.stat().st_size} bytes).")
+
+
 def append_file(path: str, content: str) -> Path:
     target = resolve(path, for_write=True)
     with target.open("a", encoding="utf-8") as fh:
