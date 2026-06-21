@@ -69,7 +69,8 @@ class StoreTests(unittest.TestCase):
         self.store.add_goal("c1", "Learn Rust")
 
         system, messages = composer.build_context(self.store, "c1", "what food do I like?")
-        self.assertIn("favorite_food", system)
+        # "favorite_food" is canonicalized to the "food_preference" slot.
+        self.assertIn("food_preference", system)
         self.assertIn("rendang", system)
         self.assertIn("Learn Rust", system)
         self.assertIn(identity.load()[:30], system)
@@ -99,6 +100,21 @@ class StoreTests(unittest.TestCase):
         self.assertLess(tight.count("| apple_"), full_claims)   # trimmed
         self.assertIn("apple premium belief kept", tight)       # strongest kept
         self.assertLess(composer._est_tokens(tight), composer._est_tokens(full))
+
+    def test_predicate_canonicalization_supersedes(self):
+        # Two phrasings of the same attribute must land in one slot so the
+        # second supersedes the first instead of creating a duplicate belief.
+        from engram import store as store_mod
+        self.assertEqual(store_mod.canonical_predicate("works_at"), "works_at")
+        self.assertEqual(store_mod.canonical_predicate("Work Place"), "works_at")
+        self.assertEqual(store_mod.canonical_predicate("employer"), "works_at")
+        self.store.add_claim("user", "works_at", "Acme", "fact", 0.9, [1], "c1")
+        out = self.store.add_claim("user", "employer", "Globex", "fact", 0.9, [2], "c1")
+        self.assertIsNotNone(out["superseded"])
+        self.assertEqual(out["superseded"]["value"], "Acme")
+        active = [c for c in self.store.active_claims() if c["predicate"] == "works_at"]
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0]["value"], "Globex")
 
     def test_meta_roundtrip(self):
         self.store.set_meta("tg_offset", "42")
@@ -853,6 +869,50 @@ class ExecutionNudgeTests(unittest.TestCase):
                              "Mau lanjut? Alternatif write_file + send_file", "c1")
         out = _inject_execution_nudge("ya", self.store, "c1")
         self.assertIn("INSTRUKSI SISTEM", out)
+
+
+class IntegrationsAndChartsTests(unittest.TestCase):
+    """Sprint 2/3 additions: connectors gating, charts, embeddings helpers."""
+
+    def test_send_email_reports_unconfigured(self):
+        # With no SMTP configured the connector must say so, never pretend.
+        import importlib
+        from engram import connectors, config
+        host, frm = config.SMTP_HOST, config.SMTP_FROM
+        config.SMTP_HOST, config.SMTP_FROM = "", ""
+        try:
+            out = connectors.send_email("a@b.com", "hi", "body")
+        finally:
+            config.SMTP_HOST, config.SMTP_FROM = host, frm
+        self.assertTrue(out.startswith("ERROR"))
+        self.assertIn("dikonfigurasi", out)
+
+    def test_send_email_tool_gated_through_dispatcher(self):
+        from engram.tools import run_tool, ToolContext
+        from engram.store import Store
+        store = Store(":memory:")
+        ctx = ToolContext(store, "c1")
+        out = run_tool("send_email", {"to": "x@y.com", "subject": "s", "body": "b"}, ctx)
+        self.assertTrue(out.startswith("ERROR"))  # not configured in tests
+        store.close()
+
+    def test_embeddings_pack_roundtrip_and_cosine(self):
+        from engram import embeddings
+        vec = [0.1, -0.2, 0.3, 0.4]
+        back = embeddings.unpack(embeddings.pack(vec))
+        for a, b in zip(vec, back):
+            self.assertAlmostEqual(a, b, places=5)
+        self.assertAlmostEqual(embeddings.cosine([1, 0], [1, 0]), 1.0, places=6)
+        self.assertAlmostEqual(embeddings.cosine([1, 0], [0, 1]), 0.0, places=6)
+        self.assertEqual(embeddings.cosine([], [1, 2]), 0.0)
+
+    def test_chart_render_degrades_without_data(self):
+        from engram import charts
+        # No table / no numeric column -> None, never an exception.
+        self.assertIsNone(charts.render({}, {"type": "bar"}, "/tmp/none.png"))
+        self.assertIsNone(
+            charts.render({"headers": ["a"], "rows": [["x"]]},
+                          {"type": "bar", "value_col": 0}, "/tmp/none.png"))
 
 
 if __name__ == "__main__":

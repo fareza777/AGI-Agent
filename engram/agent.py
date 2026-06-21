@@ -217,6 +217,32 @@ def _guard_file_claims(
     )
 
 
+_URL_RE = re.compile(r"https?://([a-z0-9.\-]+)[^\s)>\]]*", re.I)
+
+
+def _guard_unsourced_links(reply: str, ctx: ToolContext) -> str:
+    """Grounding guard: flag URLs in the reply whose domain never appeared in
+    any tool result this turn — the classic 'invented a plausible-looking
+    source' hallucination. We don't delete them (could be legitimately recalled
+    from memory), but we warn the user the links weren't verified this turn."""
+    domains = {m.group(1).lower().lstrip("www.") for m in _URL_RE.finditer(reply)}
+    if not domains:
+        return reply
+    tool_text = "\n".join(ctx.tool_output).lower()
+    unsourced = sorted(
+        d for d in domains if d.lstrip("www.") not in tool_text and d not in tool_text
+    )
+    if not unsourced:
+        return reply
+    listed = ", ".join(unsourced[:5])
+    return (
+        f"{reply}\n\n"
+        f"⚠️ Catatan sistem: link berikut tidak berasal dari hasil tool pada "
+        f"giliran ini dan belum terverifikasi — {listed}. Saya bisa buka dengan "
+        f"fetch_url untuk memastikan sebelum Anda mempercayainya."
+    )
+
+
 class Agent:
     def __init__(self, store: Store = None):
         self.store = store or Store()
@@ -267,6 +293,7 @@ class Agent:
             if ctx.produced_files:
                 reply += "\nFile yang sempat dibuat tetap saya kirim di bawah."
         reply = _guard_file_claims(reply, ctx, user_text, self.store, chat_id)
+        reply = _guard_unsourced_links(reply, ctx)
         self.store.log_event("agent", "message", reply, chat_id)
         # Inline trigger: consolidate when enough raw experience has piled up,
         # so memory stays fresh even between background passes.

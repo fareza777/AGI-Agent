@@ -63,6 +63,12 @@ class ToolContext:
         self.file_tools_called = 0
         # Images queued by view_image; the LLM loop attaches them to the next turn.
         self.pending_images = []
+        # Concatenated text of every tool result this turn — lets the grounding
+        # guard check whether a URL/source the model cited actually came back
+        # from a tool, or was invented.
+        self.tool_output = []
+        # Grounding tools (web_search / fetch_url / recall) that ran this turn.
+        self.grounding_calls = 0
         # Optional callable(text): live activity feed shown in the chat.
         self.activity = activity
         # Optional callable(path) -> bool: deliver file immediately when ready.
@@ -245,7 +251,18 @@ def tool_specs() -> list:
                "table": {"type": "object", "properties": {
                    "headers": {"type": "array", "items": {"type": "string"}},
                    "rows": {"type": "array", "items": {
-                       "type": "array", "items": {"type": "string"}}}}}},
+                       "type": "array", "items": {"type": "string"}}}}},
+               "chart": {"type": "object",
+                         "description": "optional chart drawn from the table and "
+                         "embedded (docx/pptx as an image, xlsx as a native chart)",
+                         "properties": {
+                             "type": {"type": "string",
+                                      "enum": ["bar", "barh", "line", "pie"]},
+                             "label_col": {"type": "integer",
+                                           "description": "0-based column for labels"},
+                             "value_col": {"type": "integer",
+                                           "description": "0-based numeric column"},
+                             "title": {"type": "string"}}}},
               ["filename", "format", "title"]),
         _spec("send_file",
               "Send an existing workspace file to the user (e.g. one you wrote "
@@ -266,6 +283,15 @@ def tool_specs() -> list:
               {"repo_path": {"type": "string"},
                "command": {"type": "string", "description": "e.g. 'status' or 'log --oneline'"}},
               ["repo_path", "command"]),
+        _spec("send_email",
+              "Send a plain-text email to one or more recipients via the "
+              "configured SMTP account. If email isn't configured the tool "
+              "returns an ERROR saying so — never claim an email was sent "
+              "unless the result confirms it.",
+              {"to": {"type": "string", "description": "comma-separated addresses"},
+               "subject": {"type": "string"},
+               "body": {"type": "string"}},
+              ["to", "subject", "body"]),
     ]
     if config.ENABLE_CODE_TOOL:
         specs.append(_spec(
@@ -304,6 +330,7 @@ _ICONS = {
     "read_file": "📄", "write_file": "✍️", "delete_file": "🗑",
     "search_files": "🔍", "create_document": "📝", "send_file": "📤",
     "git": "🔧", "run_python": "🐍", "run_shell": "💻", "view_image": "👁",
+    "send_email": "✉️",
 }
 # Most-informative arg to show, in priority order.
 _ARG_KEYS = ("query", "url", "path", "filename", "expression", "command",
@@ -341,6 +368,11 @@ def run_tool(name: str, args: dict, ctx: ToolContext) -> str:
     except Exception as exc:  # tool errors go back to the model, not up the stack
         log.exception("tool %s failed", name)
         result = f"ERROR: {type(exc).__name__}: {exc}"
+    if isinstance(result, str):
+        # Record output for the grounding guard (cap to keep memory bounded).
+        ctx.tool_output.append(result[:6000])
+        if name in ("web_search", "fetch_url", "recall"):
+            ctx.grounding_calls += 1
     if isinstance(result, str) and result.startswith("ERROR"):
         # Surface failures in the live feed too — the user must never be told
         # "sudah dikirim" while a ❌ was silently swallowed.
@@ -670,9 +702,12 @@ def _create_document(args, ctx):
     table = args.get("table")
     if table is not None:
         table = _coerce_json(table, dict) or None
+    chart = args.get("chart")
+    if chart is not None:
+        chart = _coerce_json(chart, dict) or None
     p = desktop.create_document(
         filename=args["filename"], doc_format=args["format"], title=args["title"],
-        sections=sections, table=table,
+        sections=sections, table=table, chart=chart,
         source_path=args.get("source_path"))
     if not p.is_file() or p.stat().st_size == 0:
         return "ERROR: document file was not created"
@@ -715,6 +750,13 @@ def _git(args, ctx):
     return desktop.git(args["repo_path"], args["command"])
 
 
+def _send_email(args, ctx):
+    from . import connectors
+
+    return connectors.send_email(args["to"], args.get("subject", ""),
+                                 args.get("body", ""))
+
+
 def _run_shell(args, ctx):
     return desktop.run_shell(args["command"])
 
@@ -746,6 +788,7 @@ _HANDLERS = {
     "send_file": _send_file,
     "view_image": _view_image,
     "git": _git,
+    "send_email": _send_email,
     "run_python": _run_python,
     "run_shell": _run_shell,
 }

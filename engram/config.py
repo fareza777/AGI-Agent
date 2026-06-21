@@ -99,3 +99,28 @@ _DEFAULT_LOGO = PROJECT_ROOT / "engram-agent-avatar.png"
 BRAND_LOGO = os.environ.get("ENGRAM_BRAND_LOGO", "") or (
     str(_DEFAULT_LOGO) if _DEFAULT_LOGO.is_file() else ""
 )
+
+# Voice: transcribe incoming Telegram voice notes via an OpenAI-compatible
+# /audio/transcriptions endpoint. Disabled unless an endpoint is configured —
+# when off, a voice note is saved and the agent says STT isn't set up (it never
+# pretends to have heard audio it couldn't transcribe).
+STT_ENDPOINT = os.environ.get("ENGRAM_STT_ENDPOINT", "").rstrip("/")
+STT_API_KEY = os.environ.get("ENGRAM_STT_API_KEY", "") or LLM_API_KEY
+STT_MODEL = os.environ.get("ENGRAM_STT_MODEL", "whisper-1")
+
+# Outbound email (connectors.send_email). Off until SMTP is configured; the
+# send_email tool then reports honestly that email isn't set up.
+SMTP_HOST = os.environ.get("ENGRAM_SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("ENGRAM_SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("ENGRAM_SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("ENGRAM_SMTP_PASSWORD", "")
+SMTP_FROM = os.environ.get("ENGRAM_SMTP_FROM", "") or SMTP_USER
+
+# Semantic memory retrieval. When an embeddings endpoint is configured, claim
+# search becomes hybrid: BM25 fetches a candidate pool, then results are
+# re-ranked by embedding cosine similarity so paraphrases and cross-language
+# queries ("makanan favorit" vs a belief stored in English) still match. With
+# no endpoint set, retrieval stays pure BM25 — identical to before.
+EMBED_ENDPOINT = os.environ.get("ENGRAM_EMBED_ENDPOINT", "").rstrip("/")
+EMBED_API_KEY = os.environ.get("ENGRAM_EMBED_API_KEY", "") or LLM_API_KEY
+EMBED_MODEL = os.environ.get("ENGRAM_EMBED_MODEL", "text-embedding-3-small")

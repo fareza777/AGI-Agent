@@ -216,6 +216,7 @@ def create_document(
     sections: list = None,
     table: dict = None,
     source_path: str = None,
+    chart: dict = None,
 ) -> Path:
     """Create a document in the workspace.
 
@@ -263,7 +264,7 @@ def create_document(
             "headers": [_unescape(h) for h in table.get("headers", [])],
             "rows": [[_unescape(c) for c in row] for row in table.get("rows", [])],
         }
-    builder(target, title, sections, table)
+    builder(target, title, sections, table, chart)
     return target
 
 
@@ -292,7 +293,7 @@ def _with_ext(filename: str, fmt: str) -> str:
     return filename if filename.lower().endswith(f".{fmt}") else f"{filename}.{fmt}"
 
 
-def _build_md(target, title, sections, table):
+def _build_md(target, title, sections, table, chart=None):
     lines = [f"# {title}", ""]
     for s in sections:
         if s.get("heading"):
@@ -308,7 +309,7 @@ def _build_md(target, title, sections, table):
     target.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _build_txt(target, title, sections, table):
+def _build_txt(target, title, sections, table, chart=None):
     lines = [title, "=" * len(title), ""]
     for s in sections:
         if s.get("heading"):
@@ -324,7 +325,7 @@ def _build_txt(target, title, sections, table):
     target.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _build_csv(target, title, sections, table):
+def _build_csv(target, title, sections, table, chart=None):
     if not (table and table.get("headers")):
         raise WorkspaceError("csv format needs a table with headers and rows")
     with target.open("w", newline="", encoding="utf-8") as fh:
@@ -333,7 +334,7 @@ def _build_csv(target, title, sections, table):
         writer.writerows(table.get("rows", []))
 
 
-def _build_html(target, title, sections, table):
+def _build_html(target, title, sections, table, chart=None):
     out = [
         f"<!doctype html><html><head><meta charset='utf-8'>",
         f"<title>{_esc(title)}</title></head><body>",
@@ -410,7 +411,24 @@ def _coerce(value):
         return _plain(text)
 
 
-def _build_docx(target, title, sections, table):
+def _silent_unlink(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _render_chart_png(table, chart, target):
+    """Render the chart to a temp PNG next to `target`. Returns path or None."""
+    if not chart or not table or not table.get("headers"):
+        return None
+    from . import charts
+
+    png = str(Path(target).with_name(f".{Path(target).stem}_chart.png"))
+    return charts.render(table, chart, png)
+
+
+def _build_docx(target, title, sections, table, chart=None):
     try:
         from docx import Document
         from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -536,6 +554,19 @@ def _build_docx(target, title, sections, table):
                 cells[i].text = _plain(c)
                 if r % 2 == 1:
                     shade(cells[i], _LIGHT)
+    # Optional chart rendered from the table, embedded after it.
+    chart_png = _render_chart_png(table, chart, target)
+    if chart_png:
+        try:
+            from docx.shared import Inches
+
+            cpar = doc.add_paragraph()
+            cpar.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            cpar.add_run().add_picture(chart_png, width=Inches(6.0))
+        except Exception:
+            pass
+        finally:
+            _silent_unlink(chart_png)
     # Footer: centered page number field.
     fpar = doc.sections[0].footer.paragraphs[0]
     fpar.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -545,7 +576,32 @@ def _build_docx(target, title, sections, table):
     doc.save(str(target))
 
 
-def _build_xlsx(target, title, sections, table):
+def _add_xlsx_chart(ws, headers, rows, chart, col_letter):
+    """Add a native Excel chart from the table. No-op on any problem so the
+    workbook is always saved."""
+    if not chart or not rows:
+        return
+    try:
+        from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+
+        kind = str(chart.get("type", "bar")).lower()
+        lcol = int(chart.get("label_col", 0))
+        vcol = int(chart.get("value_col", 1 if len(headers) > 1 else 0))
+        n = len(rows)
+        cls = {"line": LineChart, "pie": PieChart}.get(kind, BarChart)
+        obj = cls()
+        obj.title = chart.get("title") or (headers[vcol] if vcol < len(headers) else None)
+        data = Reference(ws, min_col=vcol + 1, min_row=1, max_row=n + 1)
+        cats = Reference(ws, min_col=lcol + 1, min_row=2, max_row=n + 1)
+        obj.add_data(data, titles_from_data=True)
+        obj.set_categories(cats)
+        obj.height, obj.width = 8, 16
+        ws.add_chart(obj, f"{col_letter(len(headers) + 2)}2")
+    except Exception:
+        pass
+
+
+def _build_xlsx(target, title, sections, table, chart=None):
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -587,6 +643,7 @@ def _build_xlsx(target, title, sections, table):
             ws.column_dimensions[get_column_letter(c)].width = min(
                 max(width + 3, 10), 50
             )
+        _add_xlsx_chart(ws, headers, table.get("rows", []), chart, get_column_letter)
     else:
         ws["A1"] = _plain(title)
         ws["A1"].font = Font(bold=True, size=14, color=_PRIMARY)
@@ -604,7 +661,7 @@ def _build_xlsx(target, title, sections, table):
     wb.save(str(target))
 
 
-def _build_pptx(target, title, sections, table):
+def _build_pptx(target, title, sections, table, chart=None):
     try:
         from pptx import Presentation
         from pptx.dml.color import RGBColor
@@ -745,10 +802,22 @@ def _build_pptx(target, title, sections, table):
                 12,
                 gray,
             )
+
+    # Optional chart on its own slide.
+    chart_png = _render_chart_png(table, chart, target)
+    if chart_png:
+        try:
+            slide = content_slide("Grafik")
+            slide.shapes.add_picture(
+                chart_png, Inches(1.5), Inches(1.6), height=Inches(5.2))
+        except Exception:
+            pass
+        finally:
+            _silent_unlink(chart_png)
     prs.save(str(target))
 
 
-def _build_pdf(target, title, sections, table):
+def _build_pdf(target, title, sections, table, chart=None):
     try:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import getSampleStyleSheet

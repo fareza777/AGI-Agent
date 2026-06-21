@@ -12,3 +12,6 @@ python-docx>=1.1.0
 openpyxl>=3.1.0
 python-pptx>=1.0.0
 reportlab>=4.0.0
+# Charts embedded into documents (bar/line/pie). Optional: without it, docs are
+# generated normally, just without the chart image.
+matplotlib>=3.7.0

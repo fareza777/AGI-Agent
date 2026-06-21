@@ -10,6 +10,7 @@ Full-text retrieval uses SQLite FTS5 (BM25) over both events and claims.
 """
 
 import json
+import re
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -116,7 +117,14 @@ class Store:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self):
+        """Additive, idempotent schema migrations for existing databases."""
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(claims)")}
+        if "embedding" not in cols:
+            self._conn.execute("ALTER TABLE claims ADD COLUMN embedding BLOB")
 
     # ---------------- S1: episodic event log ----------------
 
@@ -188,6 +196,7 @@ class Store:
         subject+predicate but a different value is closed (valid_to set) and linked
         via superseded_by. An identical value just boosts confidence.
         """
+        predicate = canonical_predicate(predicate)
         ts = now_iso()
         with self._lock:
             existing = self._conn.execute(
@@ -221,23 +230,74 @@ class Store:
                 superseded = existing
 
             self._conn.commit()
-            return {"id": new_id, "superseded": superseded, "duplicate": False}
+        # Embed outside the lock (network call); store best-effort. Off unless
+        # an embeddings endpoint is configured, so this is a no-op by default.
+        self._maybe_store_embedding(new_id, f"{subject} {predicate} {value}")
+        return {"id": new_id, "superseded": superseded, "duplicate": False}
+
+    def _maybe_store_embedding(self, claim_id: int, text: str):
+        from . import embeddings
+
+        if not embeddings.available():
+            return
+        try:
+            vec = embeddings.embed(text)
+            if not vec:
+                return
+            with self._lock:
+                self._conn.execute(
+                    "UPDATE claims SET embedding=? WHERE id=?",
+                    (embeddings.pack(vec), claim_id),
+                )
+                self._conn.commit()
+        except Exception:
+            pass  # retrieval still works via BM25; embedding is an enhancement
 
     def search_claims(self, query: str, limit: int, active_only: bool = True) -> list:
         match = _fts_query(query)
         if not match:
             return []
         active = "AND c.valid_to IS NULL" if active_only else ""
+        # When embeddings are on, pull a wider BM25 pool and re-rank it
+        # semantically. When off, pool == limit and rank order is unchanged.
+        from . import embeddings
+
+        hybrid = embeddings.available()
+        pool = max(limit * 5, limit) if hybrid else limit
         with self._lock:
             try:
-                return self._conn.execute(
+                rows = self._conn.execute(
                     f"SELECT c.*, bm25(claims_fts) AS rank FROM claims_fts "
                     f"JOIN claims c ON c.id = claims_fts.rowid "
                     f"WHERE claims_fts MATCH ? {active} ORDER BY rank LIMIT ?",
-                    (match, limit),
+                    (match, pool),
                 ).fetchall()
             except sqlite3.OperationalError:
                 return []
+        if not hybrid or len(rows) <= limit:
+            return rows[:limit]
+        return self._rerank_by_embedding(query, rows, limit)
+
+    def _rerank_by_embedding(self, query: str, rows: list, limit: int) -> list:
+        """Blend BM25 rank with embedding cosine similarity. Falls back to the
+        BM25 order if the query can't be embedded."""
+        from . import embeddings
+
+        qvec = embeddings.embed(query)
+        if not qvec:
+            return rows[:limit]
+        # BM25 rank is negative (lower = better); turn into a 0..1 score.
+        ranks = [r["rank"] for r in rows]
+        lo, hi = min(ranks), max(ranks)
+        spread = (hi - lo) or 1.0
+        scored = []
+        for r in rows:
+            bm = 1.0 - (r["rank"] - lo) / spread
+            sim = embeddings.cosine(qvec, embeddings.unpack(r["embedding"])) \
+                if r["embedding"] else 0.0
+            scored.append((0.4 * bm + 0.6 * sim, r))
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return [r for _, r in scored[:limit]]
 
     def active_claims(self, limit: int = 200) -> list:
         with self._lock:
@@ -392,6 +452,31 @@ class Store:
 
     def close(self):
         self._conn.close()
+
+
+# Predicate normalization (S2 slot consistency). Consolidation relies on the
+# same attribute always landing in the same (subject, predicate) slot so updates
+# supersede instead of piling up as duplicate beliefs. Models phrase predicates
+# inconsistently (works_at / work_place / employer), so we canonicalize.
+_PREDICATE_ALIASES = {
+    "work_place": "works_at", "workplace": "works_at", "employer": "works_at",
+    "company": "works_at", "job": "occupation", "profession": "occupation",
+    "role": "occupation", "favorite_food": "food_preference",
+    "likes_food": "food_preference", "food_likes": "food_preference",
+    "dietary_preference": "food_preference", "lives_in": "location",
+    "city": "location", "based_in": "location", "hometown": "location",
+    "birthday": "date_of_birth", "dob": "date_of_birth",
+    "phone_number": "phone", "contact_number": "phone",
+    "email_address": "email", "preferred_language": "language",
+    "lang": "language", "goal": "current_goal",
+}
+
+
+def canonical_predicate(predicate: str) -> str:
+    """Map a predicate to its canonical slot name so updates supersede."""
+    p = re.sub(r"[\s\-]+", "_", (predicate or "").strip().lower())
+    p = re.sub(r"^(user_|the_|my_)", "", p)
+    return _PREDICATE_ALIASES.get(p, p)
 
 
 def _fts_query(text: str) -> str:

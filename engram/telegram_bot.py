@@ -450,12 +450,39 @@ class TelegramBot:
             )
             if path:
                 saved.append(path)
-        if not saved:
+        # Voice notes / audio: download and transcribe (opt-in STT).
+        voice = msg.get("voice") or msg.get("audio")
+        voice_note = ""
+        if voice:
+            vpath = self._download(
+                voice.get("file_id"), "voice.ogg", voice.get("file_size")
+            )
+            if vpath:
+                from . import voice as voice_stt
+
+                if voice_stt.available():
+                    text = voice_stt.transcribe(str(vpath))
+                    voice_note = (
+                        f'[Transkrip pesan suara pengguna]: "{text}"'
+                        if text
+                        else "[Pesan suara diterima tapi transkripsi gagal — "
+                        "minta pengguna ketik ulang.]"
+                    )
+                else:
+                    voice_note = (
+                        "[Pengguna mengirim pesan suara, tapi transkripsi suara "
+                        "(STT) belum dikonfigurasi (ENGRAM_STT_ENDPOINT). Beri "
+                        "tahu pengguna dan minta versi teks. Jangan mengarang "
+                        "isi suaranya.]"
+                    )
+        if not saved and not voice_note:
             return "", []
         images = [p for p in saved if p.suffix.lower() in self.IMAGE_EXTS]
         others = [p for p in saved if p not in images]
         rel = lambda p: str(p.relative_to(config.WORKSPACE_DIR))  # noqa: E731
         notes = []
+        if voice_note:
+            notes.append(voice_note)
         if images:
             notes.append(
                 "[Pengguna mengirim gambar (terlampir di pesan ini — kamu "
@@ -698,13 +725,15 @@ class TelegramBot:
             "builtin": "✅ builtin (tanpa library — " "hasil lebih polos)",
         }
         lines.append("Dokumen:")
-        for fmt in ("docx", "xlsx", "pdf", "md", "html", "csv"):
+        for fmt in ("docx", "xlsx", "pptx", "pdf", "md", "html", "csv"):
             lines.append(f"  {fmt}: {label[caps[fmt]]}")
-        builtin = [f for f in ("docx", "xlsx", "pdf") if caps[f] == "builtin"]
+        libs = {"docx": "python-docx", "xlsx": "openpyxl",
+                "pptx": "python-pptx", "pdf": "reportlab"}
+        builtin = [f for f in ("docx", "xlsx", "pptx", "pdf") if caps[f] == "builtin"]
         if builtin:
             lines.append(
-                f"  → untuk hasil maksimal: pip install "
-                f"{' '.join({'docx': 'python-docx', 'xlsx': 'openpyxl', 'pdf': 'reportlab'}[f] for f in builtin)}"
+                "  → untuk hasil maksimal: pip install "
+                + " ".join(libs[f] for f in builtin)
             )
         lines.append("")
         try:
@@ -726,4 +755,16 @@ class TelegramBot:
             f"run_shell: {'aktif' if config.ENABLE_SHELL_TOOL else 'mati (default)'}"
         )
         lines.append(f"Event belum dikonsolidasi: {self.store.unprocessed_count()}")
+        # Opt-in capabilities (voice, semantic memory, integrations).
+        from . import voice, embeddings, connectors
+
+        lines.append("")
+        lines.append(f"Suara (STT): {'✅ aktif' if voice.available() else 'mati (set ENGRAM_STT_ENDPOINT)'}")
+        lines.append(
+            f"Memori semantik (embeddings): {'✅ aktif' if embeddings.available() else 'mati (BM25 saja)'}"
+        )
+        lines.append("Integrasi:")
+        for name, state in connectors.status().items():
+            mark = "✅" if state == "ready" else "—"
+            lines.append(f"  {mark} {name}: {state}")
         return "\n".join(lines)

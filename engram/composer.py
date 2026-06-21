@@ -90,11 +90,13 @@ not shown here.
 
   sent to the user automatically. Don't claim you "can't make files"; you can.
 
-  docx body paragraphs are **justified automatically** — for "justify/revisi",
+  docx is styled automatically (cover, colored headings, left-aligned body) —
 
-  use create_document(source_path=...) on the existing .md draft (≤3 tool steps:
+  for "revisi/format", use create_document(source_path=...) on the existing .md
 
-  read_file once if needed, write_file, create_document). Do not spam search_files.
+  draft (≤3 tool steps: read_file once if needed, write_file, create_document).
+
+  Pass a `chart` (bar/line/pie over the table) for data reports. Do not spam search_files.
 
   For LONG reports: write_file a .md draft first, then create_document with
 
