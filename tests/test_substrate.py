@@ -14,7 +14,9 @@ from engram.store import Store, next_occurrence  # noqa: E402
 from engram import config, composer, identity, skills, desktop, telegram_format  # noqa: E402
 from engram.llm import parse_json, strip_reasoning  # noqa: E402
 from engram.tools import ToolContext, run_tool  # noqa: E402
-from engram.agent import _guard_file_claims, _inject_execution_nudge  # noqa: E402
+from engram.agent import (  # noqa: E402
+    _guard_file_claims, _inject_execution_nudge, _should_retry_for_tools,
+)
 from engram.composer import _filter_stale_lessons  # noqa: E402
 
 
@@ -869,6 +871,48 @@ class ExecutionNudgeTests(unittest.TestCase):
                              "Mau lanjut? Alternatif write_file + send_file", "c1")
         out = _inject_execution_nudge("ya", self.store, "c1")
         self.assertIn("INSTRUKSI SISTEM", out)
+
+    def test_nudge_on_followup_instruction_after_proposal(self):
+        # Reproduces the stuck screenshot: agent offered to add diagram/table,
+        # user replies with an instruction (not a bare "ya"). Must still nudge.
+        self.store.log_event("agent", "message",
+                             "Mau aku tambahin diagram alur loop atau tabel "
+                             "perbandingan lebih dalam?", "c1")
+        out = _inject_execution_nudge("Tambah diagram dan tabel", self.store, "c1")
+        self.assertIn("INSTRUKSI SISTEM", out)
+        out2 = _inject_execution_nudge("Mana hasilnya", self.store, "c1")
+        self.assertIn("INSTRUKSI SISTEM", out2)
+
+
+class StallRetryTests(unittest.TestCase):
+    """The 'announce a plan but never call a tool' stall must force a retry."""
+
+    class _Ctx:
+        def __init__(self, called=0, produced=()):
+            self.file_tools_called = called
+            self.produced_files = list(produced)
+
+    def test_retry_on_narrated_plan(self):
+        r = ("Add diagram + tabel. Plan: rewrite bab 4, 5, 8 — tambah ASCII "
+             "diagram + comparison tables. Generate versi 2.")
+        self.assertTrue(_should_retry_for_tools(r, "Tambah diagram dan tabel",
+                                                self._Ctx()))
+
+    def test_retry_on_promised_create_document(self):
+        r = "Aku tulis ulang .md draft lalu create_document."
+        self.assertTrue(_should_retry_for_tools(r, "Mana hasilnya", self._Ctx()))
+
+    def test_no_retry_when_file_produced(self):
+        r = "Aku tulis ulang .md lalu create_document."
+        self.assertFalse(_should_retry_for_tools(r, "x", self._Ctx(produced=["a.docx"])))
+
+    def test_no_retry_on_clarifying_question(self):
+        r = "Mau saya buat laporan dalam docx atau pdf?"
+        self.assertFalse(_should_retry_for_tools(r, "buat laporan", self._Ctx()))
+
+    def test_no_retry_on_casual_reply(self):
+        self.assertFalse(_should_retry_for_tools("Tentu, senang membantu!",
+                                                 "halo", self._Ctx()))
 
 
 class IntegrationsAndChartsTests(unittest.TestCase):

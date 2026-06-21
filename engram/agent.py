@@ -27,10 +27,29 @@ _CONFIRM_RE = re.compile(
     r"^(ya|yes|oke|ok|lanjut|silakan|gas|betul|setuju|mau|iyaa?)[\s!.?]*$", re.I
 )
 _FILE_TASK_RE = re.compile(
-    r"(buat|bikin|kirim|laporan|docx|word|ppt|pptx|justify|revisi|file|dokumen)", re.I
+    r"(buat|bikin|kirim|laporan|docx|word|ppt|pptx|xlsx|excel|pdf|justify|"
+    r"revisi|file|dokumen|tambah|tambahin|sisip|diagram|tabel|grafik|chart|"
+    r"slide|ubah|ganti|perbaiki|lengkapi|update|generate|versi)",
+    re.I,
 )
 _WHERE_FILE_RE = re.compile(
-    r"^(mana|dimana|where)\??$|belum (masuk|terlihat|ada)|gak ada|kok belum", re.I
+    r"^(mana|dimana|where)\b|"
+    r"(mana|dimana|where)\s+(hasil|file|dokumen|laporan|docx|pdf|ppt)|"
+    r"belum (masuk|terlihat|ada|sampai|muncul|kelihatan)|"
+    r"(gak|nggak|ga|tidak)\s+(ada|muncul|sampai|masuk)|kok belum",
+    re.I,
+)
+# The model narrated future file work — "lalu create_document", "aku tulis
+# ulang .md draft", "Plan: ... generate versi 2" — but emitted no tool call.
+# This is the dominant stall: it describes the work instead of doing it.
+_PROMISE_RE = re.compile(
+    r"(create_document|write_file|send_file|"
+    r"(tulis|menulis)\s+ulang|rewrite|"
+    r"generate\s+(versi|ulang|dokumen|file|baru)|"
+    r"(akan|aku|saya|nanti|lalu|kemudian|terus)\b[^.\n]{0,60}"
+    r"(create_document|write_file|generate|tulis ulang|buat\s+(file|dokumen|docx|laporan))|"
+    r"^\s*(plan|rencana)\s*:)",
+    re.I | re.M,
 )
 _STALL_REPLY_RE = re.compile(
     r"(model hanya mengembalikan reasoning|mau lanjut dengan format|"
@@ -117,12 +136,17 @@ def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
     is_confirm = bool(_CONFIRM_RE.match(user_text.strip()))
     proposed = bool(
         re.search(
-            r"(write_file|send_file|create_document|\.md|\.docx|\.pptx|alternatif)",
+            r"(write_file|send_file|create_document|\.md|\.docx|\.pptx|"
+            r"diagram|tabel|grafik|versi 2|alternatif)",
             prev_assistant,
             re.I,
         )
     )
-    if is_confirm and proposed:
+    # After the agent proposed a document/edit, ANY follow-up (a confirmation,
+    # an instruction like "tambah diagram dan tabel", or "mana hasilnya") means
+    # execute now — not just bare "ya".
+    if proposed and (is_confirm or _FILE_TASK_RE.search(user_text)
+                     or _WHERE_FILE_RE.search(user_text.strip())):
         return user_text + _EXECUTION_NUDGE
     if _FILE_TASK_RE.search(user_text) or _WHERE_FILE_RE.search(user_text.strip()):
         return user_text + _EXECUTION_NUDGE
@@ -130,11 +154,22 @@ def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
 
 
 def _should_retry_for_tools(reply: str, user_text: str, ctx: ToolContext) -> bool:
+    """Retry the turn (with a hard execution nudge) when the model produced a
+    file-shaped answer but called no file tool. The strongest signal is the
+    reply itself promising tool work ("lalu create_document", "tulis ulang .md",
+    "Plan: ... generate versi 2") while produced_files is still empty — that is
+    exactly the 'announce but never act' stall, regardless of how the user
+    phrased the request."""
     if ctx.file_tools_called or ctx.produced_files:
         return False
-    if not _FILE_TASK_RE.search(user_text) and not _CONFIRM_RE.match(user_text.strip()):
+    # A genuine clarifying question ("docx atau pdf?") is not a stall — let the
+    # user answer rather than forcing a tool call.
+    if reply.strip().endswith("?"):
         return False
-    return bool(_STALL_REPLY_RE.search(reply)) or reply.startswith("(")
+    if _STALL_REPLY_RE.search(reply) or reply.startswith("("):
+        return True
+    # Narrated future file work but emitted no tool call this turn.
+    return bool(_PROMISE_RE.search(reply))
 
 
 def _user_expects_files(user_text: str, store: Store, chat_id: str) -> bool:
@@ -282,10 +317,26 @@ class Agent:
         ctx = ToolContext(self.store, chat_id, activity=activity, file_notifier=file_cb)
         try:
             reply = llm.chat(system, messages, ctx=ctx)
-            if _should_retry_for_tools(reply, user_text, ctx):
-                log.info("stall detected on file task — retrying with execution nudge")
+            # The model sometimes narrates file work without calling a tool.
+            # Re-run with a hard execution nudge — up to twice, escalating —
+            # so a "Plan: ... generate versi 2" answer becomes an actual file
+            # instead of leaving the user stuck asking "mana hasilnya".
+            for attempt in range(2):
+                if not _should_retry_for_tools(reply, user_text, ctx):
+                    break
+                log.info("stall detected on file task — forced retry %d", attempt + 1)
                 messages.append({"role": "assistant", "content": reply})
-                messages.append({"role": "user", "content": _EXECUTION_NUDGE.strip()})
+                escalation = _EXECUTION_NUDGE.strip()
+                if attempt == 1:
+                    escalation = (
+                        "[INSTRUKSI SISTEM TEGAS: Anda SUDAH dua kali hanya "
+                        "menjelaskan rencana tanpa hasil. SEKARANG panggil tool: "
+                        "write_file untuk draft .md, lalu create_document("
+                        "source_path=...) — JANGAN balas teks tanpa memanggil "
+                        "tool. Jika konten besar, potong jadi beberapa write_file "
+                        "append lalu satu create_document.]"
+                    )
+                messages.append({"role": "user", "content": escalation})
                 reply = llm.chat(system, messages, ctx=ctx)
         except Exception as exc:
             log.exception("chat model call failed")
