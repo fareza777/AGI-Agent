@@ -24,6 +24,20 @@ from . import config, tools
 
 _anthropic_client = None
 
+# Session token accounting (in-memory; resets on restart). Surfaced via /stats
+# so the operator can see usage and spot a runaway turn instead of flying blind.
+_usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+
+
+def usage_snapshot() -> dict:
+    return dict(_usage)
+
+
+def _record_usage(input_tokens, output_tokens):
+    _usage["input_tokens"] += int(input_tokens or 0)
+    _usage["output_tokens"] += int(output_tokens or 0)
+    _usage["calls"] += 1
+
 
 class LLMError(Exception):
     """Provider failure with a user-presentable message and HTTP status."""
@@ -142,6 +156,10 @@ def _anthropic_chat(system: str, messages: list, max_tokens: int, ctx) -> str:
     messages = _convert_messages(messages, _image_blocks_anthropic)
     for _ in range(config.MAX_TOOL_ITERS):
         response = _client().messages.create(messages=messages, **params)
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            _record_usage(getattr(usage, "input_tokens", 0),
+                          getattr(usage, "output_tokens", 0))
         if response.stop_reason != "tool_use" or ctx is None:
             return "".join(b.text for b in response.content if b.type == "text").strip()
         # Echo the assistant turn (incl. thinking blocks) then answer each tool call.

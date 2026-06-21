@@ -518,6 +518,22 @@ def _build_docx(target, title, sections, table, chart=None):
     bottom.set(qn("w:color"), _ACCENT)
     border.append(bottom)
     dpar._p.get_or_add_pPr().append(border)
+
+    # Static table of contents for multi-section reports — always renders (a
+    # Word TOC field stays blank until the user updates fields).
+    headings = [s["heading"] for s in sections if s.get("heading")]
+    if len(headings) >= 3:
+        toc_title = doc.add_paragraph()
+        tr = toc_title.add_run("Daftar Isi")
+        tr.font.bold = True
+        tr.font.size = Pt(13)
+        tr.font.color.rgb = RGBColor.from_string(_ACCENT)
+        for i, h in enumerate(headings, 1):
+            item = doc.add_paragraph()
+            item.paragraph_format.left_indent = Pt(12)
+            item.add_run(f"{i}.  {_plain(h)}")
+        doc.add_page_break()
+
     for s in sections:
         if s.get("heading"):
             doc.add_heading(_plain(s["heading"]), level=1)

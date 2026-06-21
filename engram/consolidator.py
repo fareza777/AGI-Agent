@@ -99,46 +99,68 @@ the evidence is too thin; do not manufacture insights."""
 
 
 def consolidate(store: Store) -> dict:
-    """One consolidation pass. Returns counts: {'events':n,'new':n,'updated':n}."""
+    """One consolidation pass. Returns counts: {'events':n,'new':n,'updated':n}.
+
+    Events are grouped BY chat so one user's transcript never distills into
+    another user's beliefs, and a failure in one group doesn't block the others
+    (a malformed batch is dead-lettered instead of looping forever)."""
     events = store.unprocessed_events()
     if not events:
         return {"events": 0, "new": 0, "updated": 0}
 
-    transcript = "\n".join(
-        f"[event {e['id']} | {e['ts']} | {e['actor']}] {e['content']}" for e in events
-    )
-    result = llm.extract(_EXTRACT_SYSTEM, transcript, _EXTRACT_SCHEMA)
+    by_chat = {}
+    for e in events:
+        by_chat.setdefault(e["chat_id"], []).append(e)
 
-    event_ids = [e["id"] for e in events]
-    chat_id = events[-1]["chat_id"]
-    new = updated = 0
-    for c in result.get("claims", []):
-        outcome = store.add_claim(
-            subject=c["subject"].strip().lower(),
-            predicate=c["predicate"].strip().lower(),
-            value=c["value"].strip(),
-            kind=c["kind"],
-            confidence=max(0.0, min(1.0, float(c["confidence"]))),
-            source_event_ids=event_ids,
-            chat_id=chat_id,
+    total_new = total_updated = total_events = 0
+    for chat_id, group in by_chat.items():
+        total_events += len(group)
+        event_ids = [e["id"] for e in group]
+        transcript = "\n".join(
+            f"[event {e['id']} | {e['ts']} | {e['actor']}] {e['content']}"
+            for e in group
         )
-        if outcome["duplicate"]:
+        try:
+            result = llm.extract(_EXTRACT_SYSTEM, transcript, _EXTRACT_SCHEMA)
+        except Exception:
+            # Dead-letter: mark processed so a permanently-bad batch can't wedge
+            # the whole consolidation pipeline. The raw events stay in the log.
+            log.exception("consolidation extract failed for chat %s — "
+                          "dead-lettering %d events", chat_id, len(group))
+            store.mark_processed(event_ids)
             continue
-        if outcome["superseded"] is not None:
-            updated += 1
-            log.info(
-                "belief updated: %s.%s: %r -> %r",
-                c["subject"], c["predicate"], outcome["superseded"]["value"], c["value"],
-            )
-        else:
-            new += 1
+        for c in result.get("claims", []):
+            try:
+                outcome = store.add_claim(
+                    subject=c["subject"].strip().lower(),
+                    predicate=c["predicate"].strip().lower(),
+                    value=c["value"].strip(),
+                    kind=c["kind"],
+                    confidence=max(0.0, min(1.0, float(c["confidence"]))),
+                    source_event_ids=event_ids,
+                    chat_id=chat_id,
+                )
+            except (KeyError, ValueError, TypeError):
+                continue  # skip a malformed claim, keep the rest
+            if outcome["duplicate"]:
+                continue
+            if outcome["superseded"] is not None:
+                total_updated += 1
+                log.info(
+                    "belief updated: %s.%s: %r -> %r",
+                    c["subject"], c["predicate"],
+                    outcome["superseded"]["value"], c["value"],
+                )
+            else:
+                total_new += 1
+        store.mark_processed(event_ids)
 
-    store.mark_processed(event_ids)
     store.log_event(
         "system", "consolidation",
-        json.dumps({"events": len(events), "new": new, "updated": updated}),
+        json.dumps({"events": total_events, "new": total_new,
+                    "updated": total_updated}),
     )
-    return {"events": len(events), "new": new, "updated": updated}
+    return {"events": total_events, "new": total_new, "updated": total_updated}
 
 
 def reflect(store: Store, chat_id: str = None) -> list:

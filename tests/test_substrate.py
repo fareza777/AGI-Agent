@@ -103,6 +103,27 @@ class StoreTests(unittest.TestCase):
         self.assertIn("apple premium belief kept", tight)       # strongest kept
         self.assertLess(composer._est_tokens(tight), composer._est_tokens(full))
 
+    def test_memory_isolated_per_chat(self):
+        # One user's belief must neither supersede nor surface in another's.
+        self.store.add_claim("user", "secret", "Alpha", "fact", 0.9, [1], "A")
+        self.store.add_claim("user", "secret", "Beta", "fact", 0.9, [2], "B")
+        a = [c["value"] for c in self.store.search_claims("alpha beta", 10, chat_id="A")]
+        b = [c["value"] for c in self.store.search_claims("alpha beta", 10, chat_id="B")]
+        self.assertEqual(a, ["Alpha"])
+        self.assertEqual(b, ["Beta"])
+        # Same-chat update still supersedes within that chat only.
+        out = self.store.add_claim("user", "secret", "Gamma", "fact", 0.9, [3], "A")
+        self.assertEqual(out["superseded"]["value"], "Alpha")
+        b2 = [c["value"] for c in self.store.search_claims("beta", 10, chat_id="B")]
+        self.assertEqual(b2, ["Beta"])  # untouched
+
+    def test_episodes_isolated_per_chat(self):
+        self.store.log_event("user", "message", "zebra fact for A", "A")
+        self.store.log_event("user", "message", "zebra fact for B", "B")
+        a = self.store.search_events("zebra", 10, chat_id="A")
+        self.assertTrue(all(e["chat_id"] == "A" for e in a))
+        self.assertTrue(any("for A" in e["content"] for e in a))
+
     def test_predicate_canonicalization_supersedes(self):
         # Two phrasings of the same attribute must land in one slot so the
         # second supersedes the first instead of creating a duplicate belief.

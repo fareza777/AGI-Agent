@@ -170,17 +170,25 @@ class Store:
             ).fetchone()
         return row["n"]
 
-    def search_events(self, query: str, limit: int) -> list:
+    def search_events(self, query: str, limit: int, chat_id: str = None) -> list:
         match = _fts_query(query)
         if not match:
             return []
+        # Scope to this chat (plus global NULL-chat rows) so one user's episodes
+        # never surface in another user's context. chat_id=None = no filter.
+        scope = "WHERE events_fts MATCH ?"
+        params = [match]
+        if chat_id is not None:
+            scope += " AND (e.chat_id = ? OR e.chat_id IS NULL)"
+            params.append(chat_id)
+        params.append(limit)
         with self._lock:
             try:
                 return self._conn.execute(
                     "SELECT e.*, bm25(events_fts) AS rank FROM events_fts "
                     "JOIN events e ON e.id = events_fts.rowid "
-                    "WHERE events_fts MATCH ? ORDER BY rank LIMIT ?",
-                    (match, limit),
+                    f"{scope} ORDER BY rank LIMIT ?",
+                    tuple(params),
                 ).fetchall()
             except sqlite3.OperationalError:
                 return []
@@ -199,10 +207,14 @@ class Store:
         predicate = canonical_predicate(predicate)
         ts = now_iso()
         with self._lock:
+            # The belief slot is per (subject, predicate, chat_id): one user's
+            # update must NOT supersede another user's same-named belief.
+            # `chat_id IS ?` matches both a value and NULL (global) correctly.
             existing = self._conn.execute(
-                "SELECT * FROM claims WHERE subject=? AND predicate=? AND valid_to IS NULL "
+                "SELECT * FROM claims WHERE subject=? AND predicate=? "
+                "AND valid_to IS NULL AND chat_id IS ? "
                 "ORDER BY id DESC LIMIT 1",
-                (subject, predicate),
+                (subject, predicate, chat_id),
             ).fetchone()
 
             if existing and existing["value"].strip().lower() == value.strip().lower():
@@ -253,24 +265,33 @@ class Store:
         except Exception:
             pass  # retrieval still works via BM25; embedding is an enhancement
 
-    def search_claims(self, query: str, limit: int, active_only: bool = True) -> list:
+    def search_claims(self, query: str, limit: int, active_only: bool = True,
+                      chat_id: str = None) -> list:
         match = _fts_query(query)
         if not match:
             return []
         active = "AND c.valid_to IS NULL" if active_only else ""
+        # Scope beliefs to this chat (+ global NULL-chat rows) so one user's
+        # memory never leaks into another's. chat_id=None = no filter.
+        scope = ""
+        params = [match]
+        if chat_id is not None:
+            scope = "AND (c.chat_id = ? OR c.chat_id IS NULL)"
+            params.append(chat_id)
         # When embeddings are on, pull a wider BM25 pool and re-rank it
         # semantically. When off, pool == limit and rank order is unchanged.
         from . import embeddings
 
         hybrid = embeddings.available()
         pool = max(limit * 5, limit) if hybrid else limit
+        params.append(pool)
         with self._lock:
             try:
                 rows = self._conn.execute(
                     f"SELECT c.*, bm25(claims_fts) AS rank FROM claims_fts "
                     f"JOIN claims c ON c.id = claims_fts.rowid "
-                    f"WHERE claims_fts MATCH ? {active} ORDER BY rank LIMIT ?",
-                    (match, pool),
+                    f"WHERE claims_fts MATCH ? {active} {scope} ORDER BY rank LIMIT ?",
+                    tuple(params),
                 ).fetchall()
             except sqlite3.OperationalError:
                 return []

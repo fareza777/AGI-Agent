@@ -315,7 +315,8 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
 
     memory = []
     claims = _filter_stale_claims(
-        store.search_claims(user_text, limit=config.MAX_RETRIEVED_CLAIMS)
+        store.search_claims(user_text, limit=config.MAX_RETRIEVED_CLAIMS,
+                            chat_id=chat_id)
     )
     # Highest-confidence beliefs survive trimming; weakest are dropped first.
     claims = sorted(claims, key=lambda c: c["confidence"], reverse=True)
@@ -332,7 +333,8 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
             budget -= _est_tokens(line)
         if len(lines) > 1:
             memory.append("\n".join(lines))
-    episodes = store.search_events(user_text, limit=config.MAX_RETRIEVED_EPISODES)
+    episodes = store.search_events(user_text, limit=config.MAX_RETRIEVED_EPISODES,
+                                   chat_id=chat_id)
     tail_ids = {e["id"] for e in store.recent_events(chat_id, config.CONVERSATION_TAIL)}
     episodes = [e for e in episodes if e["id"] not in tail_ids]
     if episodes:

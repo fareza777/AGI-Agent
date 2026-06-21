@@ -688,14 +688,22 @@ class TelegramBot:
         elif cmd == "/identity":
             self.send(chat_id, identity.load())
         elif cmd == "/stats":
+            from . import llm
             n_claims = len(self.store.active_claims(limit=100000))
             pending = self.store.unprocessed_count()
+            u = llm.usage_snapshot()
+            total = u["input_tokens"] + u["output_tokens"]
             self.send(
                 chat_id,
                 f"Keyakinan aktif: {n_claims}\n"
                 f"Event belum dikonsolidasi: {pending}\n"
                 f"Model chat: {config.CHAT_MODEL}\n"
-                f"Model konsolidasi: {config.CONSOLIDATE_MODEL}",
+                f"Model konsolidasi: {config.CONSOLIDATE_MODEL}\n"
+                f"\nToken (sesi ini, reset saat restart):\n"
+                f"  panggilan LLM: {u['calls']}\n"
+                f"  input: {u['input_tokens']:,}\n"
+                f"  output: {u['output_tokens']:,}\n"
+                f"  total: {total:,}",
             )
         else:
             self.send(chat_id, "Perintah tidak dikenal. /help untuk daftar perintah.")
