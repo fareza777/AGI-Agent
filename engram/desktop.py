@@ -935,6 +935,26 @@ def _build_xlsx(target, title, sections, table, chart=None):
     wb.save(str(target))
 
 
+def _pptx_two_col(items):
+    """If a slide body is exactly two heading-led groups (e.g. '## Kelebihan'
+    ... '## Kekurangan'), return [[title, [items]], [title, [items]]] to render
+    as two side-by-side columns. Otherwise None."""
+    if not items or items[0][0] != "heading":
+        return None
+    cols, cur = [], None
+    for kind, level, text in items:
+        if kind == "heading":
+            cur = [_plain(text), []]
+            cols.append(cur)
+        elif cur is None:
+            return None
+        else:
+            cur[1].append((kind, level, text))
+    if len(cols) != 2 or not cols[0][1] or not cols[1][1]:
+        return None
+    return cols
+
+
 def _pptx_stat_pairs(items):
     """If a slide body is a short list of 'Label: Value' metric lines (2-6,
     no sub-headings), return [(label, value), ...] to render as stat cards.
@@ -1107,6 +1127,36 @@ def _build_pptx(target, title, sections, table, chart=None, theme=None):
             rich(ctf.paragraphs[0], _plain(label).upper(), 11, gray)
             rich(ctf.add_paragraph(), value, 22, primary, bold=True)
 
+    def _col_bullets(tf, ctitle, citems):
+        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+        rich(tf.paragraphs[0], ctitle, 20, accent, bold=True)
+        cnt = 0
+        for kind, level, text in citems:
+            p = tf.add_paragraph()
+            p.space_after = Pt(8)
+            p.level = level
+            if kind in ("bullet", "number"):
+                if kind == "number":
+                    cnt += 1
+                    marker = f"{cnt}.  "
+                else:
+                    marker = "▪  " if level else "●  "
+                mk = p.add_run()
+                mk.text = marker
+                mk.font.size = Pt(14)
+                mk.font.bold = True
+                mk.font.color.rgb = accent
+                rich(p, text, 15, body_color)
+            else:
+                rich(p, text, 15, body_color)
+
+    def two_col_slide(heading, cols):
+        slide = content_slide(heading)
+        bar(slide, 6.62, 1.7, 0.02, 4.8, light)  # subtle vertical divider
+        for ci, (ctitle, citems) in enumerate(cols):
+            x = 0.8 if ci == 0 else 6.95
+            _col_bullets(textframe(slide, x, 1.55, 5.55, 5.1), ctitle, citems)
+
     max_lines = 7
     for s in sections:
         parsed = list(_parse_lines(s.get("body") or ""))
@@ -1121,6 +1171,10 @@ def _build_pptx(target, title, sections, table, chart=None, theme=None):
             stat_card_slide(base_heading, pairs)
             for rows in table_blocks:
                 table_slide(base_heading, rows)
+            continue
+        cols = None if table_blocks else _pptx_two_col(text_items)
+        if cols:
+            two_col_slide(base_heading, cols)
             continue
         chunks = [text_items[i : i + max_lines]
                   for i in range(0, len(text_items), max_lines)]

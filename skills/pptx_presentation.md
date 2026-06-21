@@ -37,6 +37,12 @@ When the user asks for a presentasi, slide, deck, PPT, or pitch:
    - **Section divider**: to break the deck into parts, add a section with a
      `heading` and an EMPTY `body` — it becomes a full-colour divider slide.
      Use one before each major part (Pasar, Analisa, Rekomendasi).
+   - **Two columns**: for comparisons (pro/kontra, sebelum/sesudah, opsi A vs
+     B), make the body exactly two `## Subjudul` blocks each followed by its
+     bullets — it renders as two side-by-side columns. Great for contrast.
+   - **Icon on a slide title**: start a `heading` with one emoji
+     (e.g. `📊 Market Snapshot`, `🎯 Rekomendasi`) — it shows as a title icon.
+     One emoji max, and never inside body text.
 5. A good deck arc: Masalah/Konteks → Data/Temuan → Opsi/Analisis →
    Rekomendasi → Next Steps.
 6. Call `create_document` with format `pptx`. Slides are 16:9 and designed:

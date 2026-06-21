@@ -2,7 +2,7 @@
 name: docx_report
 description: Generic long-form report (laporan, makalah, white paper) as polished docx or pdf. USE WHEN: "buatkan laporan", "tulis makalah tentang X", "buatkan paper". NOT for letters (→ official_letter), CV (→ cv_resume), or proposals (→ proposal_writer).
 status: active
-version: 3
+version: 4
 ---
 # Report Document (Word / PDF)
 
@@ -18,21 +18,32 @@ create_document; do **NOT** use run_python.
    - About the user's own world → call `recall` first.
    - Needs current/external facts → `web_search` then `fetch_url` on the best
      sources. Never invent figures — note where each came from.
-3. Write the content using the document engine's rich markup (docx supports
-   all of this and renders it beautifully):
-   - `**text**` → bold (use for key figures and conclusions)
+3. Write the content using the document engine's rich markup (docx renders all
+   of this beautifully — use it instead of walls of plain text):
+   - `**text**` → bold (use for every key figure and conclusion)
+   - `### Subjudul` → a sub-heading nested under the section (use to break a
+     long section into labelled parts instead of one giant block)
    - Lines starting `- ` → bullets; two leading spaces → sub-bullet
    - Lines starting `1. ` → numbered steps
-   - Plain lines → paragraphs
+   - A `|  col | col |` line followed by `|---|---|` then rows → a real styled
+     table (colored header, banded rows) right inside the body — use this for
+     small inline tables; no need for a separate file
+   - `---` on its own line → a thin horizontal rule (section break)
+   - Plain lines → justified paragraphs
+   With 3+ sections a Daftar Isi (table of contents) and page numbers are
+   added automatically.
 4. Structure as title + sections `{heading, body}`:
    - Ringkasan Eksekutif (3–5 sentences, the answer up front)
    - Latar Belakang
    - Temuan / Analisis (the substance — use bullets and **bold** figures)
    - Kesimpulan & Rekomendasi (numbered, actionable)
    - Sumber (if web research was used)
-5. Tabular data goes in `table {headers, rows}` — it renders with a colored
-   header row and banded rows. Numbers in rows should be plain digits
-   (e.g. "1500.75") so they stay clean.
+5. Tabular data: a big/primary table goes in the `table {headers, rows}` param
+   (colored header, banded rows); small inline tables can be a markdown pipe
+   table inside a section body (point 3). Numbers in rows should be plain
+   digits (e.g. "1500.75"). For a data table, also pass a `chart`
+   (bar/line/pie over the table) — it's embedded as an image and makes the
+   report look far more professional than numbers alone.
 6. Call `create_document` (format docx or pdf). It is delivered automatically.
    The docx gets a styled title page block, colored headings, **justified body
    paragraphs**, and page numbers. For revisions ("justify", "revisi format"):
