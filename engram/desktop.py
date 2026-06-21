@@ -440,26 +440,37 @@ _GRAY = "595959"  # subtitles, footers
 _BODY_COLOR = "262626"
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _NUM_LINE = re.compile(r"^\d+[.)]\s+")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_RULE_RE = re.compile(r"^([-*_])\1{2,}$")
 
 
 def _plain(text: str) -> str:
-    """Strip **bold** markers for formats that don't render them."""
-    return _BOLD_RE.sub(r"\1", str(text or ""))
+    """Strip **bold** and leading-# heading markers for formats/fields that
+    don't render them."""
+    text = _BOLD_RE.sub(r"\1", str(text or ""))
+    return _HEADING_RE.sub(r"\2", text)
 
 
 def _parse_lines(body: str):
     """Classify body lines: yields (kind, level, text).
 
-    kind: 'bullet' ('- '/'* '), 'number' ('1. '), or 'text'. Two or more
-
-    leading spaces on a bullet/number make it a sub-item (level 1).
+    kind: 'heading' ('#'..'######', level = markdown depth), 'rule'
+    ('---'/'***'/'___'), 'bullet' ('- '/'* '), 'number' ('1. '), or 'text'.
+    Two or more leading spaces on a bullet/number make it a sub-item (level 1).
 
     """
     for raw in body.splitlines():
         stripped = raw.strip()
         if not stripped:
             continue
-        level = 1 if (len(raw) - len(raw.lstrip(" "))) >= 2 else 0
+        m_head = _HEADING_RE.match(stripped)
+        if m_head:
+            yield "heading", len(m_head.group(1)), m_head.group(2).strip()
+            continue
+        if _RULE_RE.match(stripped):
+            yield "rule", 0, ""
+            continue
+        level = 1 if (len(raw) - len(raw.lstrip(" ")) >= 2) else 0
         if stripped[:2] in ("- ", "* "):
             yield "bullet", level, stripped[2:].strip()
         elif _NUM_LINE.match(stripped):
@@ -608,7 +619,20 @@ def _build_docx(target, title, sections, table, chart=None):
         if s.get("heading"):
             doc.add_heading(_plain(s["heading"]), level=1)
         for kind, level, text in _parse_lines(s.get("body") or ""):
-            if kind == "bullet":
+            if kind == "heading":
+                # Markdown sub-heading inside a body: nest it under the
+                # section's Heading 1. Depth 1-2 -> level 2, deeper -> 3/4.
+                doc.add_heading(_plain(text), level=min(max(level, 2), 4))
+            elif kind == "rule":
+                rule = doc.add_paragraph()
+                rb = OxmlElement("w:pBdr")
+                rbot = OxmlElement("w:bottom")
+                rbot.set(qn("w:val"), "single")
+                rbot.set(qn("w:sz"), "6")
+                rbot.set(qn("w:color"), _GRAY)
+                rb.append(rbot)
+                rule._p.get_or_add_pPr().append(rb)
+            elif kind == "bullet":
                 par = doc.add_paragraph(
                     style="List Bullet 2" if level else "List Bullet"
                 )
