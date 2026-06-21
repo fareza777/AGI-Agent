@@ -64,7 +64,26 @@ Rules:
   the lesson as an actionable rule, e.g. "when making documents for the user,
   use Indonesian unless asked otherwise" (subject "agent", predicate like
   lesson_document_language).
+- NEVER store volatile filesystem state: directory listings, folder names or
+  contents, what files exist, drive access status, or any snapshot of a drive/
+  folder. These go stale fast and the agent must always re-check live with
+  list_dir — recalling them causes hallucinated listings. (A stable, durable
+  fact like "the user has a G: drive synced from Google Drive" is fine; the
+  *contents* of any folder are not.)
 - Return an empty list if nothing is worth remembering."""
+
+# Volatile filesystem state must never become a long-term belief — it goes stale
+# and poisons future prompts (the model parrots an old/invented listing instead
+# of calling list_dir). The LLM is told this above; this is the hard backstop.
+_FS_PRED_TOKENS = ("drive", "folder", "sandbox", "director", "layout",
+                   "root_content", "root_folder", "filesystem", "file_system")
+_FS_VAL_MARKERS = ("list_dir", "my drive", "access denied", "root folder",
+                   "out of allowed director")
+
+
+def _is_volatile_fs_claim(predicate: str, value: str) -> bool:
+    p, v = (predicate or "").lower(), (value or "").lower()
+    return any(t in p for t in _FS_PRED_TOKENS) or any(m in v for m in _FS_VAL_MARKERS)
 
 _INSIGHT_SCHEMA = {
     "type": "object",
@@ -130,6 +149,8 @@ def consolidate(store: Store) -> dict:
             store.mark_processed(event_ids)
             continue
         for c in result.get("claims", []):
+            if _is_volatile_fs_claim(c.get("predicate", ""), c.get("value", "")):
+                continue  # never persist filesystem state as a belief
             try:
                 outcome = store.add_claim(
                     subject=c["subject"].strip().lower(),
@@ -178,6 +199,8 @@ def reflect(store: Store, chat_id: str = None) -> list:
 
     created = []
     for ins in result.get("insights", []):
+        if _is_volatile_fs_claim(ins.get("predicate", ""), ins.get("value", "")):
+            continue  # don't derive insights from / about filesystem state
         outcome = store.add_claim(
             subject=ins["subject"].strip().lower(),
             predicate=ins["predicate"].strip().lower(),
