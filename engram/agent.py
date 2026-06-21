@@ -87,32 +87,40 @@ _FS_DRIVE_RE = re.compile(r"\b([dgc]):\\?", re.I)
 _FS_NATURAL_DRIVE_RE = re.compile(r"\b(?:drive|partisi|di)\s+([dgc])\b", re.I)
 
 
-def _fs_preflight(user_text: str) -> str | None:
+def _path_from_text(text: str):
+    """Resolve a drive/path mentioned in a message, or None."""
+    if re.search(r"my\s*drive", text, re.I):
+        return "G:/My Drive"
+    m = _FS_DRIVE_RE.search(text) or _FS_NATURAL_DRIVE_RE.search(text)
+    if m:
+        letter = m.group(1).upper()
+        return "G:/My Drive" if letter == "G" else f"{letter}:/"
+    return None
+
+
+def _recent_fs_path(store, chat_id) -> str | None:
+    """The most recently mentioned drive/path in the conversation, so a vague
+    follow-up ('mana isi drivenya', 'coba cek') still targets the right place."""
+    if store is None or chat_id is None:
+        return None
+    for e in reversed(store.recent_events(chat_id, 8)):  # newest first
+        path = _path_from_text(e["content"] or "")
+        if path:
+            return path
+    return None
+
+
+def _fs_preflight(user_text: str, store=None, chat_id=None) -> str | None:
     """If user_text looks like a file-system query, return a `list_dir`
-
-    result for the implied path; otherwise None. The result is a plain
-
-    string ready to inject as a system note for the LLM.
-
-    The drive letter is optional: 'ada apa di drive D' -> D:/; 'cek
-
-    folder X' -> ./X or workspace/X."""
+    result for the implied path; otherwise None. The result is a plain string
+    ready to inject as a system note for the LLM. The path is taken from the
+    message, or — for a vague follow-up — from the recent conversation."""
     if not _FS_QUERY_RE.search(user_text):
         return None
     from . import desktop
 
-    m = _FS_DRIVE_RE.search(user_text) or _FS_NATURAL_DRIVE_RE.search(user_text)
-    if re.search(r"my\s*drive", user_text, re.I):
-        path = "G:/My Drive"  # Google Drive stream — what users mean by "My Drive"
-    elif m:
-        letter = m.group(1).upper()
-        # G: is the Google Drive mount; users mean its content under My Drive,
-        # not the bare root (which is just My Drive/ + system folders).
-        path = "G:/My Drive" if letter == "G" else f"{letter}:/"
-    else:
-        # No drive letter: use the workspace. User almost always means the
-        # current drive they're on, but we don't know which. Refuse to
-        # guess — ask the LLM to ask the user.
+    path = _path_from_text(user_text) or _recent_fs_path(store, chat_id)
+    if not path:
         return (
             "FS-PREFLIGHT: no drive letter in the query. Ask the user to "
             "specify the path (e.g. 'D:/', 'G:/My Drive/...')."
@@ -304,14 +312,16 @@ def _fs_fabrication(reply: str, ctx: ToolContext) -> bool:
     invented: either no list_dir/search_files ran this turn, or the named
     entries don't actually appear in the tool output (model ignored the real
     result — common with weaker tool-calling models)."""
+    # Only judge when we actually have a real listing to compare against
+    # (a list_dir tool call this turn, or the FS-preflight injection). With no
+    # ground truth we cannot tell a real recall from a fabrication — and a
+    # false "I didn't really read it" apology is worse than letting it through.
+    if getattr(ctx, "fs_calls", 0) == 0:
+        return False
     names = _fs_named_entries(reply)
     looks_like_listing = bool(_FS_LISTING_RE.search(reply)) or len(names) >= 6
-    if not looks_like_listing:
+    if not looks_like_listing or len(names) < 4:
         return False
-    if getattr(ctx, "fs_calls", 0) == 0:
-        return True  # claimed/showed a listing but never called the tool
-    if len(names) < 4:
-        return False  # too few entries to judge; trust the tool ran
     tool_text = "\n".join(getattr(ctx, "tool_output", [])).lower()
     grounded = sum(1 for nm in names if nm.lower() in tool_text)
     # Most named entries must come from the real tool output.
@@ -401,7 +411,7 @@ class Agent:
         system, messages = composer.build_context(self.store, chat_id, nudged)
         # FS preflight: inject real list_dir output for drive/folder queries
         # so the model has ground truth and can't invent folder names.
-        fs_note = _fs_preflight(nudged)
+        fs_note = _fs_preflight(nudged, self.store, chat_id)
         if fs_note:
             messages.append({"role": "user", "content": fs_note})
             log.info("fs-preflight fired for: %s", user_text[:80])
