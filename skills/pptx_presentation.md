@@ -2,11 +2,14 @@
 name: pptx_presentation
 description: PowerPoint deck (pptx) on any topic — 6–10 slides with title, content, table, closing. USE WHEN: "buatkan presentasi", "buat slide", "PPT tentang X", "deck untuk pitch". NOT for docx reports (→ docx_report).
 status: active
-version: 1
+version: 2
 ---
 # Presentation (PowerPoint)
 
 When the user asks for a presentasi, slide, deck, PPT, or pitch:
+
+**Engine (default):** `create_document` format=pptx — uses **python-pptx** internally
+(16:9 slides, styled theme). Never run_python for pptx.
 
 1. Confirm audience and rough length only if unclear; default 6–10 slides.
 2. Gather material: `recall` for personal context, `web_search` + `fetch_url`

@@ -9,14 +9,17 @@ powershell -NoProfile -Command ^
   "$root = '%ROOT%'; " ^
   "$procs = @(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\"); " ^
   "$targets = New-Object System.Collections.Generic.List[object]; " ^
+  "$hasLock = Test-Path (Join-Path $root 'engram.lock'); " ^
   "foreach ($p in $procs) { " ^
   "  $cmd = $p.CommandLine; " ^
   "  if ($cmd -notlike '*run.py*') { continue }; " ^
   "  if ($cmd -like '*Engram-Agent*' -or $cmd -like '*Engram AI Agents*') { [void]$targets.Add($p); continue }; " ^
   "  if ($cmd -like '*\.venv\Scripts\python.exe*') { " ^
   "    $par = $procs | Where-Object { $_.ProcessId -eq $p.ParentProcessId } | Select-Object -First 1; " ^
-  "    if ($par -and ($par.CommandLine -like ('*' + $root + '*') -or $par.CommandLine -like '*start_engram*')) { [void]$targets.Add($p) } " ^
-  "  } " ^
+  "    if ($par -and ($par.CommandLine -like ('*' + $root + '*') -or $par.CommandLine -like '*start_engram*')) { [void]$targets.Add($p) }; " ^
+  "    continue " ^
+  "  }; " ^
+  "  if ($hasLock -and $cmd -like '*python.exe*run.py*') { [void]$targets.Add($p) } " ^
   "}; " ^
   "$ids = @($targets | ForEach-Object { $_.ProcessId }); " ^
   "$children = @($procs | Where-Object { $ids -contains $_.ParentProcessId }); " ^
@@ -25,6 +28,7 @@ powershell -NoProfile -Command ^
   "Start-Sleep -Seconds 2"
 
 if exist engram.pid del /f engram.pid 2>nul
+if exist engram.lock del /f engram.lock 2>nul
 
 echo [Engram] Starting single instance (venv)...
 "%~dp0.venv\Scripts\python.exe" run.py

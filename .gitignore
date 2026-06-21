@@ -8,3 +8,15 @@ venv/
 workspace/
 skills/history/
 engram.pid
+engram.lock
+
+# Runtime logs and one-off debug scratch (machine-local, never shared)
+*.log
+=
+import_dbg.txt
+guard_out.txt
+db_check_out.txt
+db_check.py
+dbg_import.py
+test_guard.py
+get_cwd.ps1

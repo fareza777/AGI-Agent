@@ -2,11 +2,14 @@
 name: spreadsheet
 description: Build a styled xlsx (or csv) workbook from user data — header row, formulas-ready numbers, styled. USE WHEN: "buatkan spreadsheet", "tabel xlsx", "export ke Excel", "tracker tabel". NOT for analyzing numbers (→ data_analyst) or building docx tables.
 status: active
-version: 2
+version: 3
 ---
 # Spreadsheet (Excel)
 
 When the user wants a spreadsheet, tabel, budget, tracker, rekap, or data export:
+
+**Engine (default):** `create_document` format=xlsx — uses **openpyxl** internally
+(colored header, banded rows, autofilter, fitted columns). Never run_python for xlsx.
 
 1. Determine the columns (headers) and gather the rows. Ask only if the schema
    is genuinely ambiguous; otherwise infer a sensible structure.

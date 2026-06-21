@@ -2,11 +2,16 @@
 name: docx_report
 description: Generic long-form report (laporan, makalah, white paper) as polished docx or pdf. USE WHEN: "buatkan laporan", "tulis makalah tentang X", "buatkan paper". NOT for letters (→ official_letter), CV (→ cv_resume), or proposals (→ proposal_writer).
 status: active
-version: 2
+version: 3
 ---
 # Report Document (Word / PDF)
 
 When the user asks for a report, laporan, dokumen, proposal singkat, or memo:
+
+**Engine (default):** always `create_document` format=docx. It runs **python-docx**
+internally (styled title block, colored headings, justified paragraphs, banded
+tables, page numbers). If the user says "pakai python-docx" — use
+create_document; do **NOT** use run_python.
 
 1. Clarify the format only if genuinely ambiguous — default to `docx`.
 2. Gather material:

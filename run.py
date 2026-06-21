@@ -22,6 +22,8 @@ logging.basicConfig(
 )
 
 _PID_FILE = config.PROJECT_ROOT / "engram.pid"
+_LOCK_FILE = config.PROJECT_ROOT / "engram.lock"
+_lock_handle = None
 
 
 def _pid_alive(pid: int) -> bool:
@@ -43,21 +45,78 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _acquire_single_instance() -> None:
-    """Refuse to start if another Engram run.py is already alive."""
-    if _PID_FILE.exists():
+def _release_single_instance() -> None:
+    global _lock_handle
+    _PID_FILE.unlink(missing_ok=True)
+    if _lock_handle is not None:
+        if os.name == "nt":
+            import msvcrt
+            try:
+                msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        else:
+            import fcntl
+            try:
+                fcntl.flock(_lock_handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
         try:
-            old = int(_PID_FILE.read_text(encoding="utf-8").strip())
-        except (ValueError, OSError):
-            old = 0
-        if _pid_alive(old):
-            print(
-                f"Another Engram instance is already running (PID {old}).\n"
-                "Stop it first, or run start_engram.bat to restart cleanly."
-            )
-            sys.exit(1)
+            _lock_handle.close()
+        except OSError:
+            pass
+        _lock_handle = None
+
+
+def _acquire_single_instance() -> None:
+    """Refuse to start if another Engram run.py holds the lock."""
+    global _lock_handle
+    _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _lock_handle = open(_LOCK_FILE, "a+", encoding="utf-8")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(_lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        old = 0
+        if _PID_FILE.exists():
+            try:
+                old = int(_PID_FILE.read_text(encoding="utf-8").strip())
+            except (ValueError, OSError):
+                old = 0
+        if old and not _pid_alive(old):
+            try:
+                _lock_handle.close()
+            except OSError:
+                pass
+            _lock_handle = None
+            _PID_FILE.unlink(missing_ok=True)
+            try:
+                _LOCK_FILE.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return _acquire_single_instance()
+        try:
+            _lock_handle.close()
+        except OSError:
+            pass
+        _lock_handle = None
+        msg = "Another Engram instance is already running"
+        if old:
+            msg += f" (PID {old})"
+        msg += ".\nStop it first, or run start_engram.bat to restart cleanly."
+        print(msg)
+        sys.exit(1)
+
+    _lock_handle.seek(0)
+    _lock_handle.truncate()
+    _lock_handle.write(str(os.getpid()))
+    _lock_handle.flush()
     _PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
-    atexit.register(lambda: _PID_FILE.unlink(missing_ok=True))
+    atexit.register(_release_single_instance)
 
 
 def main() -> int:

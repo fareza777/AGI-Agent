@@ -15,8 +15,51 @@ _THINK = re.compile(r"<\s*(think|thinking|reasoning)\s*>.*?<\s*/\s*\1\s*>",
                     re.DOTALL | re.IGNORECASE)
 
 
+def strip_legacy_system_notes(text: str) -> str:
+    """Drop old 'Catatan sistem' footers the model may copy from chat history."""
+    marker = "⚠️ Catatan sistem:"
+    if marker not in (text or ""):
+        return text or ""
+    head, tail = text.split(marker, 1)
+    if any(k in tail.lower() for k in (
+            "create_document", "send_file", "ter-queue", "wajib pakai tool",
+            "tidak dipanggil", "belum sampai ke chat")):
+        return head.rstrip()
+    return text
+
+
+_INJECTION_LEAD = re.compile(
+    r"^[\s\S]*?(?:injeksi|injection|pesan tersembunyi|hidden message)"
+    r"[\s\S]*?\n---\n",
+    re.I | re.MULTILINE,
+)
+_INJECTION_TAIL = re.compile(
+    r"\n*(?:\*{1,2}|_)?Sekali lagi:[^\n]*(?:injeksi|injection)[^\n]*(?:\*{1,2}|_)?\s*$",
+    re.I,
+)
+_INJECTION_NOTE = re.compile(
+    r"\n\n(?:Note:)?[^\n]*(?:injeksi|injection|pesan tersembunyi)[^\n]*(?=\n\n|\Z)",
+    re.I,
+)
+
+
+def strip_injection_paranoia(text: str) -> str:
+    """Remove model hallucinations accusing the user of prompt injection."""
+    text = text or ""
+    if not re.search(r"injeksi|injection|pesan tersembunyi|hidden message", text, re.I):
+        return text
+    text = _INJECTION_LEAD.sub("", text, count=1)
+    text = _INJECTION_TAIL.sub("", text)
+    text = _INJECTION_NOTE.sub("\n\n", text)
+    return text.rstrip()
+
+
+def sanitize_agent_reply(text: str) -> str:
+    return strip_injection_paranoia(strip_legacy_system_notes(text or ""))
+
+
 def to_telegram_html(text: str) -> str:
-    text = _THINK.sub("", text or "").strip()
+    text = sanitize_agent_reply(_THINK.sub("", text or "").strip())
 
     # 1. Pull out fenced code blocks so their contents aren't reformatted.
     blocks = []
