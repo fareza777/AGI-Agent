@@ -19,3 +19,7 @@ matplotlib>=3.7.0
 # read_file tells you to install it when handed a PDF (docx/xlsx/pptx reading
 # reuses python-docx/openpyxl/python-pptx above).
 pypdf>=4.0.0
+# IANA timezone database for zoneinfo. REQUIRED on Windows (no system tz db),
+# otherwise the user-timezone feature silently fails and reminders/tasks fall
+# back to UTC instead of the user's local time.
+tzdata>=2024.1
