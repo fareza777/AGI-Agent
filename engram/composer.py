@@ -255,45 +255,25 @@ turn. If you called list_dir, ONLY report what the tool returned.
 - Reply in the user's language."""
 
 
+def _est_tokens(text: str) -> int:
+    """Cheap token estimate (no tokenizer dependency): ~4 chars per token."""
+    return (len(text) + 3) // 4
+
+
 def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
-    """Returns (system_prompt, messages) ready for the chat model."""
-    parts = [identity.load(), _INSTRUCTIONS]
-    claims = _filter_stale_claims(
-        store.search_claims(user_text, limit=config.MAX_RETRIEVED_CLAIMS)
-    )
-    if claims:
-        lines = ["## MEMORY — beliefs (claims)"]
-        for c in claims:
-            lines.append(
-                f"- {c['subject']} | {c['predicate']} | {c['value']} "
-                f"[{c['kind']}, conf {c['confidence']:.2f}, since {c['valid_from'][:10]}]"
-            )
-        parts.append("\n".join(lines))
-    episodes = store.search_events(user_text, limit=config.MAX_RETRIEVED_EPISODES)
-    tail_ids = {e["id"] for e in store.recent_events(chat_id, config.CONVERSATION_TAIL)}
-    episodes = [e for e in episodes if e["id"] not in tail_ids]
-    if episodes:
-        lines = ["## MEMORY — past episode excerpts"]
-        for e in episodes:
-            snippet = e["content"][:400].replace("\n", " ")
-            lines.append(f"- [{e['ts'][:10]}, {e['actor']}] {snippet}")
-        parts.append("\n".join(lines))
-    goals = store.goals(chat_id, "active")
-    if goals:
-        lines = ["## ACTIVE GOALS"]
-        for g in goals:
-            lines.append(f"- #{g['id']} {g['title']} (since {g['created_at'][:10]})")
-        parts.append("\n".join(lines))
-    # S10 learning loop: lessons distilled from past mistakes are always in
-    # view (not just when keywords match), so the same mistake isn't repeated.
-    lesson_rows = _filter_stale_lessons(store.recent_lessons(limit=8))
-    seen = {c["id"] for c in claims}
-    lesson_rows = [l for l in lesson_rows if l["id"] not in seen]
-    if lesson_rows:
-        lines = ["## LESSONS FROM PAST MISTAKES (follow these)"]
-        for l in lesson_rows:
-            lines.append(f"- {l['value']} [{l['valid_from'][:10]}]")
-        parts.append("\n".join(lines))
+    """Returns (system_prompt, messages) ready for the chat model.
+
+    The retrieved-memory sections are budget-aware: claims (highest confidence
+    first), then episodes, are admitted only while the running token estimate
+    stays under config.MAX_CONTEXT_TOKENS, so a large memory store can't blow
+    the context window or the per-turn cost. Static identity/instructions and
+    the always-on lesson/capability sections are never trimmed."""
+    head = [identity.load(), _INSTRUCTIONS]
+
+    # Build the always-on static TAIL first (capabilities, skills, dirs, time)
+    # so its real token cost is reserved before we admit any trimmable memory.
+    # Without this the tail (esp. the full skills list) silently overruns the
+    # ceiling. The tail is appended AFTER memory to keep the original ordering.
     skill_index = skills.index()
     cap_lines = [
         "## CAPABILITIES (authoritative — overrides outdated MEMORY)",
@@ -305,19 +285,19 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
         "NOT required for document generation.",
     ]
     if config.ALLOWED_DIRS:
-        roots = ", ".join(
+        extra = ", ".join(
             str(r) for r in config.ALLOWED_DIRS if str(r) != str(config.WORKSPACE_DIR)
         )
-        if roots:
-            cap_lines.append(f"- File tools also work on allowed roots: {roots}")
-    parts.append("\n".join(cap_lines))
+        if extra:
+            cap_lines.append(f"- File tools also work on allowed roots: {extra}")
+    tail = ["\n".join(cap_lines)]
     if skill_index:
         lines = ["## AVAILABLE SKILLS (load with the use_skill tool)"]
         for name, description in skill_index:
             lines.append(f"- {name}: {description}")
-        parts.append("\n".join(lines))
+        tail.append("\n".join(lines))
     roots = "\n".join(f"- {r}" for r in config.ALLOWED_DIRS)
-    parts.append(
+    tail.append(
         "## ALLOWED FILE DIRECTORIES\n"
         "list_dir, read_file, search_files, view_image, and git work under "
         "these roots (use absolute paths like G:/My Drive or relative to "
@@ -326,8 +306,62 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
         f"{roots}"
     )
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC (%A)")
-    parts.append(f"Current time: {now}")
-    system = "\n\n".join(parts)
+    tail.append(f"Current time: {now}")
+
+    # Budget left for the dynamic MEMORY sections after head + reserved tail.
+    budget = config.MAX_CONTEXT_TOKENS - _est_tokens("\n\n".join(head + tail))
+
+    memory = []
+    claims = _filter_stale_claims(
+        store.search_claims(user_text, limit=config.MAX_RETRIEVED_CLAIMS)
+    )
+    # Highest-confidence beliefs survive trimming; weakest are dropped first.
+    claims = sorted(claims, key=lambda c: c["confidence"], reverse=True)
+    if claims:
+        lines = ["## MEMORY — beliefs (claims)"]
+        for c in claims:
+            line = (
+                f"- {c['subject']} | {c['predicate']} | {c['value']} "
+                f"[{c['kind']}, conf {c['confidence']:.2f}, since {c['valid_from'][:10]}]"
+            )
+            if budget - _est_tokens(line) < 0:
+                break
+            lines.append(line)
+            budget -= _est_tokens(line)
+        if len(lines) > 1:
+            memory.append("\n".join(lines))
+    episodes = store.search_events(user_text, limit=config.MAX_RETRIEVED_EPISODES)
+    tail_ids = {e["id"] for e in store.recent_events(chat_id, config.CONVERSATION_TAIL)}
+    episodes = [e for e in episodes if e["id"] not in tail_ids]
+    if episodes:
+        lines = ["## MEMORY — past episode excerpts"]
+        for e in episodes:
+            snippet = e["content"][:400].replace("\n", " ")
+            line = f"- [{e['ts'][:10]}, {e['actor']}] {snippet}"
+            if budget - _est_tokens(line) < 0:
+                break
+            lines.append(line)
+            budget -= _est_tokens(line)
+        if len(lines) > 1:
+            memory.append("\n".join(lines))
+    goals = store.goals(chat_id, "active")
+    if goals:
+        lines = ["## ACTIVE GOALS"]
+        for g in goals:
+            lines.append(f"- #{g['id']} {g['title']} (since {g['created_at'][:10]})")
+        memory.append("\n".join(lines))
+    # S10 learning loop: lessons distilled from past mistakes are always in
+    # view (not just when keywords match), so the same mistake isn't repeated.
+    lesson_rows = _filter_stale_lessons(store.recent_lessons(limit=8))
+    seen = {c["id"] for c in claims}
+    lesson_rows = [l for l in lesson_rows if l["id"] not in seen]
+    if lesson_rows:
+        lines = ["## LESSONS FROM PAST MISTAKES (follow these)"]
+        for l in lesson_rows:
+            lines.append(f"- {l['value']} [{l['valid_from'][:10]}]")
+        memory.append("\n".join(lines))
+
+    system = "\n\n".join(head + memory + tail)
     messages = _conversation_tail(store, chat_id)
     messages.append({"role": "user", "content": user_text})
     return system, messages

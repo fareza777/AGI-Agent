@@ -76,6 +76,30 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(messages[0]["role"], "user")          # API ordering rule
         self.assertEqual(messages[-1]["content"], "what food do I like?")
 
+    def test_context_budget_trims_memory(self):
+        # When the budget is tight, the dynamic MEMORY section is trimmed and
+        # the highest-confidence belief survives ahead of weak fillers.
+        import engram.config as cfg
+        self.store.add_claim("user", "apple_premium", "apple premium belief kept",
+                             "fact", 0.95, [1], "c1")
+        for i in range(10):
+            self.store.add_claim("user", f"apple_filler_{i}",
+                                 f"apple weak filler belief number {i} " * 6,
+                                 "fact", 0.30, [1], "c1")
+        original = cfg.MAX_CONTEXT_TOKENS
+        try:
+            cfg.MAX_CONTEXT_TOKENS = 10**9
+            full, _ = composer.build_context(self.store, "c1", "apple")
+            full_claims = full.count("| apple_")
+            # Tighten so several claims must be dropped.
+            cfg.MAX_CONTEXT_TOKENS = composer._est_tokens(full) - 250
+            tight, _ = composer.build_context(self.store, "c1", "apple")
+        finally:
+            cfg.MAX_CONTEXT_TOKENS = original
+        self.assertLess(tight.count("| apple_"), full_claims)   # trimmed
+        self.assertIn("apple premium belief kept", tight)       # strongest kept
+        self.assertLess(composer._est_tokens(tight), composer._est_tokens(full))
+
     def test_meta_roundtrip(self):
         self.store.set_meta("tg_offset", "42")
         self.assertEqual(self.store.get_meta("tg_offset"), "42")
@@ -681,6 +705,25 @@ class DocgenFallbackTests(unittest.TestCase):
         self.assertTrue(data.rstrip().endswith(b"%%EOF"))
         self.assertIn(rb"Laporan \(PDF\)", data)             # escaped parens
         self.assertGreater(data.count(b"/Type /Page "), 1)   # paginated
+
+    def test_minimal_pptx_is_valid_package(self):
+        import zipfile
+        import xml.dom.minidom as minidom
+        from engram import docgen
+        target = self.dir / "deck.pptx"
+        docgen.minimal_pptx(target, "Judul Deck", self.SECTIONS, self.TABLE)
+        with zipfile.ZipFile(target) as z:
+            self.assertIsNone(z.testzip())
+            names = set(z.namelist())
+            # Full reference chain must be present, or PowerPoint won't open it.
+            for part in ("ppt/presentation.xml", "ppt/slideMasters/slideMaster1.xml",
+                         "ppt/slideLayouts/slideLayout1.xml", "ppt/theme/theme1.xml",
+                         "ppt/slides/slide1.xml"):
+                self.assertIn(part, names)
+            for n in names:
+                if n.endswith(".xml") or n.endswith(".rels"):
+                    minidom.parseString(z.read(n))   # well-formed XML
+            self.assertIn("Judul Deck", z.read("ppt/slides/slide1.xml").decode())
 
     def test_col_letter(self):
         from engram.docgen import _col_letter

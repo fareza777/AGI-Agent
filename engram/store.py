@@ -104,6 +104,17 @@ class Store:
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # WAL lets the background "sleep cycle" thread read/write without
+        # colliding with the chat thread, and busy_timeout waits out brief
+        # contention instead of raising "database is locked". synchronous=NORMAL
+        # is the safe, fast pairing for WAL. (In-memory DBs don't support WAL.)
+        if self._db_path != ":memory:":
+            try:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError:
+                pass
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 

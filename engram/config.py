@@ -53,6 +53,11 @@ MAX_OUTPUT_TOKENS = int(os.environ.get("ENGRAM_MAX_OUTPUT_TOKENS", "8000"))
 MAX_RETRIEVED_CLAIMS = 25
 MAX_RETRIEVED_EPISODES = 8
 CONVERSATION_TAIL = 16  # recent events included verbatim
+# Hard ceiling on the assembled system prompt (rough tokens ~= chars/4). The
+# retrieved-memory sections (claims, episodes, lessons) are trimmed by priority
+# to fit under this so context can't silently balloon cost or truncate tool
+# JSON. Static identity/instructions/capabilities are always kept.
+MAX_CONTEXT_TOKENS = int(os.environ.get("ENGRAM_MAX_CONTEXT_TOKENS", "12000"))
 # Tool layer
 MAX_TOOL_ITERS = 10  # max tool-use round trips per turn
 SKILLS_DIR = PROJECT_ROOT / "skills"
@@ -87,3 +92,10 @@ SHELL_TIMEOUT_SEC = int(os.environ.get("ENGRAM_SHELL_TIMEOUT_SEC", "30"))
 # --force-with-lease, reset --hard, clean -fd are blocked in BOTH modes.
 GIT_READ_ONLY = os.environ.get("ENGRAM_GIT_READ_ONLY", "1") == "1"
 MAX_FILE_READ_BYTES = 200_000
+
+# Branding: a logo placed on the cover of generated docx/pptx. Defaults to the
+# bundled Engram avatar when present; override with ENGRAM_BRAND_LOGO=/path.
+_DEFAULT_LOGO = PROJECT_ROOT / "engram-agent-avatar.png"
+BRAND_LOGO = os.environ.get("ENGRAM_BRAND_LOGO", "") or (
+    str(_DEFAULT_LOGO) if _DEFAULT_LOGO.is_file() else ""
+)

@@ -472,6 +472,17 @@ def _build_docx(target, title, sections, table):
         el.set(qn("w:fill"), fill)
         cell._tc.get_or_add_tcPr().append(el)
 
+    # Optional brand logo on the cover, centered above the title.
+    if config.BRAND_LOGO and os.path.isfile(config.BRAND_LOGO):
+        try:
+            from docx.shared import Inches
+
+            lpar = doc.add_paragraph()
+            lpar.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            lpar.add_run().add_picture(config.BRAND_LOGO, width=Inches(1.3))
+        except Exception:
+            pass  # a bad/oversized logo must never break document generation
+
     # Title block: large colored title, gray date line, thin rule under it.
     tpar = doc.add_paragraph()
     trun = tpar.add_run(_plain(title))
@@ -497,14 +508,18 @@ def _build_docx(target, title, sections, table):
                 par = doc.add_paragraph(
                     style="List Bullet 2" if level else "List Bullet"
                 )
+                rich(par, text)
             elif kind == "number":
                 par = doc.add_paragraph(
                     style="List Number 2" if level else "List Number"
                 )
+                rich(par, text)
             else:
                 par = doc.add_paragraph()
                 rich(par, text)
-                par.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                # Left-aligned (not justified): justification on short report
+                # lines opens ugly inter-word "rivers". Left reads cleaner.
+                par.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
     if table and table.get("headers"):
         headers = table["headers"]
         t = doc.add_table(rows=1, cols=len(headers))

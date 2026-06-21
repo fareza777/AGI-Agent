@@ -212,6 +212,47 @@ class TelegramBot:
                 self._call("sendMessage", chat_id=chat_id, text=plain)
                 break
 
+    def send_keyboard(self, chat_id, text: str, buttons: list):
+        """Send a message with an inline keyboard. `buttons` is a list of rows,
+        each row a list of (label, callback_data) tuples. Best-effort."""
+        keyboard = [
+            [{"text": label, "callback_data": data} for label, data in row]
+            for row in buttons
+        ]
+        try:
+            self._call(
+                "sendMessage",
+                chat_id=chat_id,
+                text=telegram_format.to_telegram_html(text),
+                parse_mode="HTML",
+                reply_markup={"inline_keyboard": keyboard},
+                disable_web_page_preview=True,
+            )
+        except RuntimeError:
+            self.send(chat_id, text)
+
+    # Quick-action menu shown by /menu and /start.
+    _MENU_BUTTONS = [
+        [("🧠 Memori", "/memory"), ("🎯 Goals", "/goals")],
+        [("⏰ Reminder", "/reminders"), ("🗓️ Tugas", "/tasks")],
+        [("📚 Skills", "/skills"), ("💤 Reflect", "/reflect")],
+        [("🩺 Doctor", "/doctor"), ("📊 Stats", "/stats")],
+    ]
+
+    # Registered into Telegram's UI command menu via setMyCommands on startup.
+    _BOT_COMMANDS = [
+        ("menu", "Tombol aksi cepat"),
+        ("help", "Bantuan & daftar perintah"),
+        ("memory", "Lihat beberapa belief terbaru"),
+        ("goals", "Daftar goal aktif"),
+        ("reminders", "Pengingat terjadwal"),
+        ("tasks", "Tugas otomatis terjadwal"),
+        ("skills", "Daftar skill (termasuk draft)"),
+        ("reflect", "Konsolidasi memori + refleksi sekarang"),
+        ("doctor", "Cek kesehatan sistem"),
+        ("stats", "Statistik memori"),
+    ]
+
     def send_activity(self, chat_id, text: str):
         """One compact live-status line (🔎 web_search: ...). Best-effort —
 
@@ -227,6 +268,20 @@ class TelegramBot:
         except Exception:
             log.debug("activity line failed", exc_info=True)
 
+    @staticmethod
+    def _file_caption(path: str) -> str:
+        """A short descriptor shown with the file so the user knows what it is
+        before opening it: name, type, and human-readable size."""
+        name = os.path.basename(path)
+        ext = (os.path.splitext(name)[1].lstrip(".") or "file").upper()
+        size = os.path.getsize(path)
+        human = (
+            f"{size} B" if size < 1024
+            else f"{size / 1024:.0f} KB" if size < 1024 * 1024
+            else f"{size / (1024 * 1024):.1f} MB"
+        )
+        return f"📄 {name} · {ext} · {human}"
+
     def send_document(self, chat_id, path: str) -> bool:
         """Upload a workspace file. Returns True on success."""
         if not os.path.isfile(path):
@@ -237,7 +292,7 @@ class TelegramBot:
             with open(path, "rb") as fh:
                 resp = self.session.post(
                     url,
-                    data={"chat_id": chat_id},
+                    data={"chat_id": chat_id, "caption": self._file_caption(path)},
                     files={"document": (os.path.basename(path), fh)},
                     timeout=120,
                 )
@@ -254,11 +309,19 @@ class TelegramBot:
     def run(self):
         me = self._call("getMe")
         log.info("connected as @%s", me.get("username"))
+        # Register the slash-command menu so commands autocomplete in the
+        # Telegram UI. Best-effort — never let it block startup.
+        try:
+            self._call("setMyCommands", commands=[
+                {"command": c, "description": d} for c, d in self._BOT_COMMANDS])
+        except Exception:
+            log.debug("setMyCommands failed", exc_info=True)
         offset = int(self.store.get_meta("tg_offset", "0"))
         while True:
             try:
                 updates = self._call(
-                    "getUpdates", offset=offset, timeout=60, allowed_updates=["message"]
+                    "getUpdates", offset=offset, timeout=60,
+                    allowed_updates=["message", "callback_query"],
                 )
             except (requests.RequestException, RuntimeError):
                 log.exception("getUpdates failed; retrying in 5s")
@@ -288,6 +351,24 @@ class TelegramBot:
                             )
 
     def _handle_update(self, upd: dict):
+        # Inline-keyboard button press: ack it, then run its callback_data as if
+        # the user had typed it (the buttons carry slash-commands).
+        cb = upd.get("callback_query")
+        if cb:
+            cb_chat = str((cb.get("message") or {}).get("chat", {}).get("id", ""))
+            data = (cb.get("data") or "").strip()
+            try:
+                self._call("answerCallbackQuery", callback_query_id=cb["id"])
+            except Exception:
+                log.debug("answerCallbackQuery failed", exc_info=True)
+            if cb_chat and data:
+                if config.ALLOWED_CHAT_IDS and cb_chat not in config.ALLOWED_CHAT_IDS:
+                    return
+                if data.startswith("/"):
+                    self._handle_command(cb_chat, data)
+                else:
+                    self.agent.handle_message(cb_chat, data)
+            return
         msg = upd.get("message") or {}
         text = (msg.get("text") or "").strip()
         chat = msg.get("chat") or {}
@@ -415,8 +496,12 @@ class TelegramBot:
         cmd = parts[0].split("@")[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
         self.store.log_event("user", "command", text, chat_id)
-        if cmd in ("/start", "/help"):
+        if cmd == "/menu":
+            self.send_keyboard(chat_id, "Aksi cepat:", self._MENU_BUTTONS)
+        elif cmd in ("/start", "/help"):
             self.send(chat_id, HELP)
+            if cmd == "/start":
+                self.send_keyboard(chat_id, "Aksi cepat:", self._MENU_BUTTONS)
         elif cmd == "/memory":
             if not arg:
                 self.send(chat_id, "Pakai: /memory <kata kunci>")
