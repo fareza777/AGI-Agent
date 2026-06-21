@@ -470,6 +470,7 @@ _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _NUM_LINE = re.compile(r"^\d+[.)]\s+")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _RULE_RE = re.compile(r"^([-*_])\1{2,}$")
+_TABLE_ROW_RE = re.compile(r"^\|.*\|$")
 
 
 def _plain(text: str) -> str:
@@ -479,24 +480,54 @@ def _plain(text: str) -> str:
     return _HEADING_RE.sub(r"\2", text)
 
 
+def _is_table_sep(stripped: str) -> bool:
+    """True for a markdown table separator row like '|----|----|' or
+    '| :-- | --: |' (only pipes, dashes, colons, spaces — and at least one dash)."""
+    return ("|" in stripped and "-" in stripped
+            and all(ch in "|:- " for ch in stripped))
+
+
+def _split_table_row(stripped: str) -> list:
+    return [c.strip() for c in stripped.strip().strip("|").split("|")]
+
+
 def _parse_lines(body: str):
-    """Classify body lines: yields (kind, level, text).
+    """Classify body lines: yields (kind, level, payload).
 
     kind: 'heading' ('#'..'######', level = markdown depth), 'rule'
-    ('---'/'***'/'___'), 'bullet' ('- '/'* '), 'number' ('1. '), or 'text'.
-    Two or more leading spaces on a bullet/number make it a sub-item (level 1).
+    ('---'/'***'/'___'), 'table' (payload is a list of rows, each a list of
+    cells — a markdown pipe table), 'bullet' ('- '/'* '), 'number' ('1. '),
+    or 'text'. Two or more leading spaces on a bullet/number make it a
+    sub-item (level 1).
 
     """
-    for raw in body.splitlines():
+    lines = body.splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        raw = lines[i]
         stripped = raw.strip()
         if not stripped:
+            i += 1
+            continue
+        # Markdown table: a pipe row immediately followed by a |---|---| separator.
+        if (_TABLE_ROW_RE.match(stripped) and i + 1 < n
+                and _is_table_sep(lines[i + 1].strip())):
+            rows = [_split_table_row(stripped)]
+            j = i + 2
+            while j < n and _TABLE_ROW_RE.match(lines[j].strip()):
+                rows.append(_split_table_row(lines[j].strip()))
+                j += 1
+            yield "table", 0, rows
+            i = j
             continue
         m_head = _HEADING_RE.match(stripped)
         if m_head:
             yield "heading", len(m_head.group(1)), m_head.group(2).strip()
+            i += 1
             continue
         if _RULE_RE.match(stripped):
             yield "rule", 0, ""
+            i += 1
             continue
         level = 1 if (len(raw) - len(raw.lstrip(" ")) >= 2) else 0
         if stripped[:2] in ("- ", "* "):
@@ -505,6 +536,7 @@ def _parse_lines(body: str):
             yield "number", level, _NUM_LINE.sub("", stripped)
         else:
             yield "text", 0, stripped
+        i += 1
 
 
 def _coerce(value):
@@ -670,6 +702,24 @@ def _build_docx(target, title, sections, table, chart=None):
                     style="List Number 2" if level else "List Number"
                 )
                 rich(par, text)
+            elif kind == "table" and text:
+                cols = max(len(r) for r in text)
+                bt = doc.add_table(rows=0, cols=cols)
+                bt.style = "Table Grid"
+                for ri, row in enumerate(text):
+                    cells = bt.add_row().cells
+                    for ci in range(cols):
+                        val = row[ci] if ci < len(row) else ""
+                        if ri == 0:
+                            run = cells[ci].paragraphs[0].add_run(_plain(val))
+                            run.font.bold = True
+                            run.font.color.rgb = RGBColor.from_string("FFFFFF")
+                            shade(cells[ci], _PRIMARY)
+                        else:
+                            rich(cells[ci].paragraphs[0], val)
+                            if ri % 2 == 0:
+                                shade(cells[ci], _LIGHT)
+                doc.add_paragraph()
             else:
                 par = doc.add_paragraph()
                 rich(par, text)
@@ -791,8 +841,21 @@ def _build_xlsx(target, title, sections, table, chart=None):
                 cell = ws.cell(row=r, column=1, value=_plain(s["heading"]))
                 cell.font = Font(bold=True, color=_ACCENT)
                 r += 1
-            for _kind, _level, text in _parse_lines(s.get("body") or ""):
-                ws.cell(row=r, column=1, value=_plain(text))
+            for kind, _level, payload in _parse_lines(s.get("body") or ""):
+                if kind == "table" and payload:
+                    for ri, row in enumerate(payload):
+                        for ci, c in enumerate(row):
+                            cell = ws.cell(row=r, column=1 + ci, value=_coerce(c))
+                            if ri == 0:
+                                cell.font = Font(bold=True, color="FFFFFF")
+                                cell.fill = PatternFill("solid", fgColor=_PRIMARY)
+                        r += 1
+                    r += 1
+                    continue
+                if kind == "rule":
+                    r += 1
+                    continue
+                ws.cell(row=r, column=1, value=_plain(payload))
                 r += 1
             r += 1
         ws.column_dimensions["A"].width = 90
@@ -895,6 +958,15 @@ def _build_pptx(target, title, sections, table, chart=None):
                 par.level = level
                 if kind == "heading":
                     rich(par, _plain(text), 20, accent, bold=True)
+                    continue
+                if kind == "table" and text:
+                    # No grid on a slide — render rows as clean aligned lines
+                    # (header bold), never the raw '| a | b |' markdown.
+                    for ri, row in enumerate(text):
+                        p = par if ri == 0 else tf.add_paragraph()
+                        p.space_after = Pt(4)
+                        rich(p, "   ".join(_plain(c) for c in row),
+                             14, accent if ri == 0 else body_color, bold=(ri == 0))
                     continue
                 if kind == "number":
                     counter += 1
@@ -1001,6 +1073,29 @@ def _build_pdf(target, title, sections, table, chart=None):
             elif kind == "number":
                 num += 1
                 flow.append(Paragraph(f"{num}. {_pdf_rich(text)}", body))
+            elif kind == "table" and text:
+                num = 0
+                cols = max(len(r) for r in text)
+                cell_style = ParagraphStyle("Cell", parent=body, fontSize=8,
+                                            leading=10)
+                head_style = ParagraphStyle("CellHead", parent=cell_style,
+                                            textColor=colors.white)
+                data = [[Paragraph(_pdf_rich(row[ci] if ci < len(row) else ""),
+                                   head_style if ri == 0 else cell_style)
+                         for ci in range(cols)]
+                        for ri, row in enumerate(text)]
+                tbl = Table(data, repeatRows=1)
+                tbl.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#" + _PRIMARY)),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+                     [colors.white, colors.HexColor("#" + _LIGHT)]),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ]))
+                flow.append(tbl)
+                flow.append(Spacer(1, 6))
             else:
                 flow.append(Paragraph(_pdf_rich(text), body))
         flow.append(Spacer(1, 8))
