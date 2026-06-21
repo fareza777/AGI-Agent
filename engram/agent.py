@@ -105,7 +105,10 @@ def _fs_preflight(user_text: str) -> str | None:
     if re.search(r"my\s*drive", user_text, re.I):
         path = "G:/My Drive"  # Google Drive stream — what users mean by "My Drive"
     elif m:
-        path = f"{m.group(1).upper()}:/"
+        letter = m.group(1).upper()
+        # G: is the Google Drive mount; users mean its content under My Drive,
+        # not the bare root (which is just My Drive/ + system folders).
+        path = "G:/My Drive" if letter == "G" else f"{letter}:/"
     else:
         # No drive letter: use the workspace. User almost always means the
         # current drive they're on, but we don't know which. Refuse to
@@ -411,6 +414,12 @@ class Agent:
         if self.file_notifier is not None:
             file_cb = lambda p: self.file_notifier(chat_id, p)  # noqa: E731
         ctx = ToolContext(self.store, chat_id, activity=activity, file_notifier=file_cb)
+        if fs_note and "FS-PREFLIGHT: list_dir" in fs_note:
+            # The preflight ran a REAL list_dir and injected it — count it as a
+            # filesystem fetch and grounding source so the output guard treats
+            # the model echoing it as grounded, not a fabrication.
+            ctx.fs_calls += 1
+            ctx.tool_output.append(fs_note)
         try:
             reply = llm.chat(system, messages, ctx=ctx, on_delta=on_delta)
             # The model sometimes narrates file work without calling a tool.
