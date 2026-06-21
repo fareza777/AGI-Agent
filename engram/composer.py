@@ -112,7 +112,15 @@ not shown here.
 
   delete_file: manage files in your workspace AND any allowed directory roots
 
-  listed below (not just workspace/).
+  listed below (not just workspace/). When you show a directory listing,
+
+  report the NAMES exactly as the tool returned them — never add descriptions,
+
+  captions, emoji labels, or guesses about what a folder/file contains (you
+
+  only have names, not contents). To describe what's inside a folder, call
+
+  list_dir on it first; do not infer it.
 
 - edit_file: to CHANGE an existing file (code, config, a draft), prefer this
 

@@ -719,7 +719,10 @@ def _run_python(args, ctx):
 # ---------------- digital-assistant tools ----------------
 
 def _list_dir(args, ctx):
-    return desktop.list_dir(args.get("path", "."))
+    listing = desktop.list_dir(args.get("path", "."))
+    return (listing + "\n\n[These are the exact NAMES only. Do not add "
+            "descriptions, captions, emoji, or guesses about what any entry "
+            "contains — to know a folder's contents, call list_dir on it.]")
 
 
 def _read_file(args, ctx):

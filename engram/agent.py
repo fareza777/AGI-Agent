@@ -123,7 +123,11 @@ def _fs_preflight(user_text: str) -> str | None:
     return (
         f"FS-PREFLIGHT: list_dir({path}) returned this VERBATIM list. "
         f"Treat it as ground truth — do not invent folder/file names. "
-        f"If the user wants recursion, call search_files or list_dir on "
+        f"List the NAMES only. Do NOT add descriptions, captions, emoji "
+        f"labels, or any guess about what a folder contains — you have only "
+        f"the names, not the contents. To know what is inside a folder, call "
+        f"list_dir on that folder; never infer or annotate. "
+        f"If the user wants recursion, call list_dir / search_files on "
         f"specific subfolders, never guess:\n\n{result}"
     )
 
