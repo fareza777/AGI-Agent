@@ -3,9 +3,11 @@ anthropic>=0.92.0
 requests>=2.31.0
 python-dotenv>=1.0.0
 
-# Document generation (optional but recommended — enables docx/xlsx/pdf output).
-# Without these, the agent still produces md/html/txt/csv and tells you to
-# pip install the missing one when you ask for docx/xlsx/pdf.
+# Document generation (REQUIRED for polished output — install these).
+# These drive the rich, styled docx/xlsx/pptx/pdf path. If any is missing the
+# agent silently falls back to a zero-dependency generator that still produces a
+# VALID file but with much plainer styling — which is the usual cause of
+# "the report looks unformatted". Keep them installed for clean output.
 python-docx>=1.1.0
 openpyxl>=3.1.0
 python-pptx>=1.0.0

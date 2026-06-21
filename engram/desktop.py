@@ -280,7 +280,10 @@ def _unescape(text):
 
     text, e.g. Windows paths, are left alone)."""
     text = str(text or "")
-    if "\\n" in text and "\n" not in text:
+    # Rewrite when the literal escapes are clearly the intended line breaks:
+    # no real newlines at all, OR at least as many literal "\n" as real ones
+    # (the mixed-mangling case the old "\n not in text" guard silently missed).
+    if text.count("\\n") and text.count("\\n") >= text.count("\n"):
         text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "    ")
     return text
 
@@ -593,9 +596,12 @@ def _build_pptx(target, title, sections, table):
         from pptx.enum.shapes import MSO_SHAPE
         from pptx.util import Inches, Pt
     except ImportError:
-        raise WorkspaceError(
-            "pptx generation needs python-pptx — run: pip install python-pptx"
-        )
+        # Zero-dependency fallback — a valid .pptx, plainer styling. PPTX must
+        # never be the one format that hard-fails when the lib is absent.
+        from . import docgen
+
+        docgen.minimal_pptx(target, title, sections, table)
+        return
     prs = Presentation()
     prs.slide_width = Inches(13.333)  # 16:9
     prs.slide_height = Inches(7.5)
@@ -782,7 +788,8 @@ _BUILDERS = {
     "pptx": _build_pptx,
     "pdf": _build_pdf,
 }
-_NATIVE_LIBS = {"docx": "docx", "xlsx": "openpyxl", "pdf": "reportlab"}
+_NATIVE_LIBS = {"docx": "docx", "xlsx": "openpyxl", "pptx": "pptx",
+                "pdf": "reportlab"}
 
 
 def document_capabilities() -> dict:

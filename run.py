@@ -88,9 +88,10 @@ def main() -> int:
 
     from engram import desktop
     caps = desktop.document_capabilities()
-    builtin = [f for f in ("docx", "xlsx", "pdf") if caps[f] == "builtin"]
+    builtin = [f for f in ("docx", "xlsx", "pptx", "pdf") if caps[f] == "builtin"]
     if builtin:
-        libs = {"docx": "python-docx", "xlsx": "openpyxl", "pdf": "reportlab"}
+        libs = {"docx": "python-docx", "xlsx": "openpyxl",
+                "pptx": "python-pptx", "pdf": "reportlab"}
         logging.getLogger("engram").info(
             "document formats %s using built-in generators (works, plainer "
             "styling); for richer output: pip install %s",

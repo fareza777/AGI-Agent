@@ -464,25 +464,91 @@ def _cancel_task(args, ctx):
 # ---------------- world-facing tools ----------------
 
 _UA = {"User-Agent": "Mozilla/5.0 (compatible; EngramAgent/0.1)"}
+# DuckDuckGo blocks obvious bot user-agents (returns an empty result page),
+# which used to silently yield "No results." and tempt the model to fabricate.
+# A realistic browser UA is sent for the search endpoints specifically.
+_BROWSER_UA = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _ddg_uddg(href: str) -> str:
+    """DuckDuckGo wraps result hrefs in a /l/?uddg= redirect — unwrap it."""
+    m = re.search(r"[?&]uddg=([^&]+)", href)
+    return urllib.parse.unquote(m.group(1)) if m else href
+
+
+def _search_ddg_html(query: str) -> list:
+    """Primary backend: html.duckduckgo.com. Returns [(title, url, snippet)]."""
+    resp = requests.post("https://html.duckduckgo.com/html/",
+                         data={"q": query}, headers=_BROWSER_UA, timeout=20)
+    resp.raise_for_status()
+    page = resp.text
+    # Class names drift over time — match result__a OR any result anchor.
+    links = re.findall(
+        r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+        page, re.DOTALL)
+    snippets = re.findall(r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>',
+                          page, re.DOTALL)
+    hits = []
+    for i, (href, title) in enumerate(links):
+        snippet = _strip_html(snippets[i]) if i < len(snippets) else ""
+        hits.append((_strip_html(title), _ddg_uddg(href), snippet))
+    return hits
+
+
+def _search_ddg_lite(query: str) -> list:
+    """Fallback backend: lite.duckduckgo.com (simpler HTML, different blocking)."""
+    resp = requests.post("https://lite.duckduckgo.com/lite/",
+                         data={"q": query}, headers=_BROWSER_UA, timeout=20)
+    resp.raise_for_status()
+    links = re.findall(
+        r'<a[^>]*class="[^"]*result-link[^"]*"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+        resp.text, re.DOTALL)
+    return [(_strip_html(title), _ddg_uddg(href), "") for href, title in links]
+
+
+def _search_wikipedia(query: str) -> list:
+    """Last-resort grounding: Wikipedia REST search. Authoritative, never a
+    block page — better a real encyclopedia hit than a fabricated answer."""
+    resp = requests.get(
+        "https://en.wikipedia.org/w/api.php",
+        params={"action": "query", "list": "search", "srsearch": query,
+                "format": "json", "srlimit": 5},
+        headers=_UA, timeout=15)
+    resp.raise_for_status()
+    hits = []
+    for r in resp.json().get("query", {}).get("search", []):
+        title = r.get("title", "")
+        url = "https://en.wikipedia.org/wiki/" + urllib.parse.quote(title.replace(" ", "_"))
+        hits.append((title, url, _strip_html(r.get("snippet", ""))))
+    return hits
 
 
 def _web_search(args, ctx):
-    resp = requests.post("https://html.duckduckgo.com/html/",
-                         data={"q": args["query"]}, headers=_UA, timeout=20)
-    resp.raise_for_status()
-    page = resp.text
-    links = re.findall(r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
-                       page, re.DOTALL)
-    snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', page, re.DOTALL)
-    out = []
-    for i, (href, title) in enumerate(links[:5]):
-        url = href
-        m = re.search(r"[?&]uddg=([^&]+)", href)
-        if m:
-            url = urllib.parse.unquote(m.group(1))
-        snippet = _strip_html(snippets[i]) if i < len(snippets) else ""
-        out.append(f"{i+1}. {_strip_html(title)}\n   {url}\n   {snippet}")
-    return "\n".join(out) if out else "No results."
+    """Search the web with layered fallbacks. Each backend is tried in turn;
+    the first that yields results wins. If ALL fail, return an explicit
+    SEARCH_FAILED marker so the model grounds on fetch_url / says it doesn't
+    know — it must NOT invent facts to fill the gap."""
+    query = args["query"]
+    errors = []
+    for backend in (_search_ddg_html, _search_ddg_lite, _search_wikipedia):
+        try:
+            hits = backend(query)
+        except Exception as exc:  # try the next backend, remember why
+            errors.append(f"{backend.__name__}: {type(exc).__name__}")
+            continue
+        if hits:
+            out = [f"{i+1}. {title}\n   {url}\n   {snippet}"
+                   for i, (title, url, snippet) in enumerate(hits[:5])]
+            return "\n".join(out)
+    detail = "; ".join(errors) if errors else "all backends returned 0 results"
+    return ("SEARCH_FAILED: no results from any backend "
+            f"({detail}). Do NOT invent facts. Either call fetch_url on a known "
+            "authoritative source (see the web_research_with_fallback skill) or "
+            "tell the user you could not retrieve current data.")
 
 
 def _fetch_url(args, ctx):
