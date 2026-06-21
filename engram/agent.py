@@ -264,32 +264,54 @@ _URL_RE = re.compile(r"https?://([a-z0-9.\-]+)[^\s)>\]]*", re.I)
 _FS_LISTING_RE = re.compile(
     r"(top-level folders?|isi (dari )?(folder|drive|direktori)|"
     r"daftar (isi |)folder|berhasil di-?fetch|di-?fetch sekarang|"
-    r"folder utama|live[,)] |list_dir\(|├──|└──)",
+    r"folder utama|data mentah|list_dir|📂|📁|├──|└──|"
+    r"\d+\s*folder\b)",
     re.I,
 )
+# A bullet / tree / path line that names a directory entry.
+_FS_ENTRY_RE = re.compile(r"^\s*(?:[•·\-\*]|[├└]──|\|──|📁|📂|📄)\s*(.+?)\s*$")
 _FS_FORCE_NUDGE = (
-    "[INSTRUKSI SISTEM TEGAS: Anda menampilkan isi folder/drive TANPA "
-    "memanggil list_dir pada giliran ini — itu fabrikasi dan dilarang keras. "
-    "SEKARANG panggil tool list_dir pada path yang dimaksud (mis. "
-    "'G:/My Drive'), lalu tampilkan HANYA nama yang dikembalikan tool, tanpa "
-    "deskripsi/tebakan. Jika path belum jelas, TANYAKAN ke user — jangan "
-    "mengarang nama folder.]"
+    "[INSTRUKSI SISTEM TEGAS: Daftar folder yang Anda tampilkan TIDAK cocok "
+    "dengan hasil tool list_dir (atau Anda belum memanggilnya) — itu fabrikasi "
+    "dan dilarang keras. Panggil tool list_dir pada path yang dimaksud (mis. "
+    "'G:/My Drive') SEKARANG, lalu salin PERSIS nama yang dikembalikan tool — "
+    "jangan tambah, ubah, atau karang nama. Jika path belum jelas, TANYAKAN.]"
 )
+
+
+def _fs_named_entries(reply: str) -> list:
+    """Folder/file names the reply presents as directory entries."""
+    out = []
+    for ln in reply.splitlines():
+        m = _FS_ENTRY_RE.match(ln)
+        if not m:
+            continue
+        name = m.group(1).strip().strip("/\\").strip()
+        # Drop any trailing annotation after a dash / em-dash / parenthesis.
+        name = re.split(r"\s+[—–\-]\s|\s+\(", name, 1)[0].strip()
+        low = name.lower()
+        if 2 <= len(name) <= 50 and low not in ("file", "folder", "dir", "free"):
+            out.append(name)
+    return out
 
 
 def _fs_fabrication(reply: str, ctx: ToolContext) -> bool:
-    """True when the reply presents a directory listing but no list_dir /
-    search_files actually ran this turn — i.e. the listing is invented."""
-    if getattr(ctx, "fs_calls", 0) > 0:
+    """True when the reply presents a directory listing whose entries are
+    invented: either no list_dir/search_files ran this turn, or the named
+    entries don't actually appear in the tool output (model ignored the real
+    result — common with weaker tool-calling models)."""
+    names = _fs_named_entries(reply)
+    looks_like_listing = bool(_FS_LISTING_RE.search(reply)) or len(names) >= 6
+    if not looks_like_listing:
         return False
-    if _FS_LISTING_RE.search(reply):
-        return True
-    # A tree of many folder-marker lines with no fs tool call.
-    folderish = sum(
-        1 for ln in reply.splitlines()
-        if ln.rstrip().endswith("\\") or "──" in ln
-    )
-    return folderish >= 4
+    if getattr(ctx, "fs_calls", 0) == 0:
+        return True  # claimed/showed a listing but never called the tool
+    if len(names) < 4:
+        return False  # too few entries to judge; trust the tool ran
+    tool_text = "\n".join(getattr(ctx, "tool_output", [])).lower()
+    grounded = sum(1 for nm in names if nm.lower() in tool_text)
+    # Most named entries must come from the real tool output.
+    return grounded < max(2, len(names) // 2)
 
 
 def _guard_fs_claims(reply: str, ctx: ToolContext) -> str:
