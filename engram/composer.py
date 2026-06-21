@@ -447,6 +447,16 @@ _STALE_CLAIM_MARKERS = _STALE_LESSON_MARKERS + (
 )
 
 
+# Filesystem state — folder listings, drive access, root contents, layouts — is
+# volatile and must NEVER be injected as a belief: it goes stale and makes the
+# model parrot an old/invented listing instead of calling list_dir live. These
+# tokens in a predicate, or markers in a value, drop the claim from context.
+_FS_PRED_TOKENS = ("drive", "folder", "sandbox", "director", "layout",
+                   "root_content", "root_folder", "filesystem", "file_system")
+_FS_VAL_MARKERS = ("list_dir", "my drive", "access denied", "root folder",
+                   "g:\\", "out of allowed director")
+
+
 def _filter_stale_claims(claims: list) -> list:
     out = []
     for c in claims:
@@ -455,6 +465,10 @@ def _filter_stale_claims(claims: list) -> list:
         subject = c["subject"]
         if any(m in val for m in _STALE_CLAIM_MARKERS):
             continue
+        if any(t in pred for t in _FS_PRED_TOKENS) or any(
+            m in val for m in _FS_VAL_MARKERS
+        ):
+            continue  # volatile filesystem state — re-check with list_dir, never recall
         if pred in (
             "tool_availability_engram",
             "lesson_create_document_limits",

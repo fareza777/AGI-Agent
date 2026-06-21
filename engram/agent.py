@@ -69,17 +69,16 @@ _EXECUTION_NUDGE = (
 # prompt to call list_dir) was ignored; the model kept answering from
 # training data and inventing folder names.
 _FS_QUERY_RE = re.compile(
-    r"(isi\s+(folder|drive|path|directory|root)|"
+    r"(isi\s+(folder|drive|path|directory|direktori|root|dari)|"
     r"apa\s+(aja|yang|isi)\s+(isi|yang|ada)\s+(di|dalam)\s+|"
-    r"folder\s+(apa|apa\s+aja|yang\s+ada)\s+(di|dalam)|"
-    r"tunjukkan\s+(isi|folder|file)|"
-    r"cek\s+(drive|folder|isi|d:|g:|c:)|"
-    r"list\s+(drive|folder|isi|d:|g:)|"
-    r"scan\s+(drive|folder|d:|g:)|"
-    r"d:\s*\\?\??|g:\s*\\?\??|c:\s*\\?\??|"
-    r"isi\s+drive|"
-    r"what\'s\s+in\s+|"
-    r"ada\s+(folder|file|apa)\s+(apa|aja)?\s*(di|dalam)?\s*[dg])",
+    r"folder\s+(apa|apa\s+aja|yang\s+ada)|"
+    r"(tunjukkan|tunjuk\w*|tampil\w*|lihat|buka|akses|explore|jelajahi|scan|list|cek|"
+    r"baca)\s+(isi\s+)?(folder|drive|direktori|file|my\s*drive|[dgc]:)|"
+    r"my\s*drive|"
+    r"\b[dgc]:[\\/]|"
+    r"(drive|partisi)\s+[dgc]\b|"
+    r"what'?s\s+in\s+|"
+    r"ada\s+(folder|file|apa)\s+(apa|aja)?\s*(di|dalam)?\s*[dgc])",
     re.I,
 )
 # Strip the leading "di " that the user almost always uses ("di D:").
@@ -103,7 +102,9 @@ def _fs_preflight(user_text: str) -> str | None:
     from . import desktop
 
     m = _FS_DRIVE_RE.search(user_text) or _FS_NATURAL_DRIVE_RE.search(user_text)
-    if m:
+    if re.search(r"my\s*drive", user_text, re.I):
+        path = "G:/My Drive"  # Google Drive stream — what users mean by "My Drive"
+    elif m:
         path = f"{m.group(1).upper()}:/"
     else:
         # No drive letter: use the workspace. User almost always means the
