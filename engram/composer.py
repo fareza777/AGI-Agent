@@ -368,7 +368,8 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
     episodes = store.search_events(user_text, limit=config.MAX_RETRIEVED_EPISODES,
                                    chat_id=chat_id)
     tail_ids = {e["id"] for e in store.recent_events(chat_id, config.CONVERSATION_TAIL)}
-    episodes = [e for e in episodes if e["id"] not in tail_ids]
+    episodes = [e for e in episodes
+                if e["id"] not in tail_ids and not _looks_like_fs_dump(e["content"])]
     if episodes:
         lines = ["## MEMORY — past episode excerpts"]
         for e in episodes:
@@ -413,6 +414,11 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
 def _conversation_tail(store: Store, chat_id: str) -> list:
     messages = []
     for e in store.recent_events(chat_id, config.CONVERSATION_TAIL):
+        # Never replay a directory listing (a real tool dump, or an earlier
+        # fabricated tree) as conversation history — that is what makes the
+        # model repeat an old/invented listing instead of using a fresh one.
+        if _looks_like_fs_dump(e["content"]):
+            continue
         role = "assistant" if e["actor"] == "agent" else "user"
         messages.append({"role": role, "content": e["content"]})
     # API requires the first message to be from the user.
@@ -455,6 +461,21 @@ _FS_PRED_TOKENS = ("drive", "folder", "sandbox", "director", "layout",
                    "root_content", "root_folder", "filesystem", "file_system")
 _FS_VAL_MARKERS = ("list_dir", "my drive", "access denied", "root folder",
                    "g:\\", "out of allowed director")
+
+
+def _looks_like_fs_dump(text: str) -> bool:
+    """A past event that is a directory listing (real tool result OR an earlier
+    fabricated tree). Such events must never be re-injected as 'memory' — that
+    is the self-reinforcing loop that makes the model repeat an old listing
+    instead of using a fresh list_dir."""
+    low = (text or "").lower()
+    if any(m in low for m in ("[dir]", "[file]", "list_dir", "top-level folder",
+                              "my drive", "└──", "├──", "out of allowed director")):
+        return True
+    # Many short folder-name bullet/tree lines.
+    n = sum(1 for ln in text.splitlines()
+            if ln.strip()[:1] in ("•", "·", "-", "*", "├", "└", "|"))
+    return n >= 6
 
 
 def _filter_stale_claims(claims: list) -> list:
