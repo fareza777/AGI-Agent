@@ -391,6 +391,13 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
 
     system = "\n\n".join(head + memory + tail)
     messages = _conversation_tail(store, chat_id)
+    # The caller logs the incoming user message to the store BEFORE building
+    # context, so it's already the last entry in the tail. Drop it and re-add
+    # user_text (which the caller may have augmented, e.g. with an execution
+    # nudge); otherwise the model sees the same message twice and wrongly tells
+    # the user they pasted it twice.
+    if messages and messages[-1]["role"] == "user":
+        messages.pop()
     messages.append({"role": "user", "content": user_text})
     return system, messages
 
