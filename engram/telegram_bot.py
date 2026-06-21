@@ -787,12 +787,15 @@ class TelegramBot:
         )
         lines.append(f"Event belum dikonsolidasi: {self.store.unprocessed_count()}")
         # Opt-in capabilities (voice, semantic memory, integrations).
-        from . import voice, embeddings, connectors
+        from . import voice, embeddings, connectors, imagegen
 
         lines.append("")
         lines.append(f"Suara (STT): {'✅ aktif' if voice.available() else 'mati (set ENGRAM_STT_ENDPOINT)'}")
         lines.append(
             f"Memori semantik (embeddings): {'✅ aktif' if embeddings.available() else 'mati (BM25 saja)'}"
+        )
+        lines.append(
+            f"Generasi gambar: {'✅ aktif' if imagegen.available() else 'mati (set ENGRAM_IMAGE_ENDPOINT)'}"
         )
         lines.append("Integrasi:")
         for name, state in connectors.status().items():

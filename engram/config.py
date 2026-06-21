@@ -124,3 +124,10 @@ SMTP_FROM = os.environ.get("ENGRAM_SMTP_FROM", "") or SMTP_USER
 EMBED_ENDPOINT = os.environ.get("ENGRAM_EMBED_ENDPOINT", "").rstrip("/")
 EMBED_API_KEY = os.environ.get("ENGRAM_EMBED_API_KEY", "") or LLM_API_KEY
 EMBED_MODEL = os.environ.get("ENGRAM_EMBED_MODEL", "text-embedding-3-small")
+
+# Image generation. When an images endpoint (OpenAI-compatible
+# /images/generations) is configured, the generate_image tool produces a PNG
+# and delivers it. Unset = the tool reports it isn't configured (never fakes).
+IMAGE_ENDPOINT = os.environ.get("ENGRAM_IMAGE_ENDPOINT", "").rstrip("/")
+IMAGE_API_KEY = os.environ.get("ENGRAM_IMAGE_API_KEY", "") or LLM_API_KEY
+IMAGE_MODEL = os.environ.get("ENGRAM_IMAGE_MODEL", "gpt-image-1")

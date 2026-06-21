@@ -6,6 +6,7 @@ Run:  python -m pytest tests/  (or  python tests/test_substrate.py)
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1003,6 +1004,45 @@ class IntegrationsAndChartsTests(unittest.TestCase):
         out = run_tool("send_email", {"to": "x@y.com", "subject": "s", "body": "b"}, ctx)
         self.assertTrue(out.startswith("ERROR"))  # not configured in tests
         store.close()
+
+    def test_generate_image_tool_gated(self):
+        from engram.tools import run_tool, ToolContext
+        from engram.store import Store
+        store = Store(":memory:")
+        ctx = ToolContext(store, "c1")
+        out = run_tool("generate_image", {"prompt": "a cat", "filename": "cat"}, ctx)
+        self.assertTrue(out.startswith("ERROR"))  # not configured in tests
+        self.assertEqual(ctx.produced_files, [])
+        store.close()
+
+    def test_per_chat_lock_serializes(self):
+        # Two threads handling the same chat must not run the turn body
+        # concurrently; different chats may overlap.
+        import threading
+        from engram.agent import Agent
+        from engram.store import Store
+        agent = Agent(Store(":memory:"))
+        overlap = {"max": 0, "cur": 0}
+        guard = threading.Lock()
+
+        def fake(chat_id, text, images=None):
+            with guard:
+                overlap["cur"] += 1
+                overlap["max"] = max(overlap["max"], overlap["cur"])
+            time.sleep(0.02)
+            with guard:
+                overlap["cur"] -= 1
+            return "ok", []
+
+        agent._handle_message = fake
+        threads = [threading.Thread(target=agent.handle_message, args=("same", "x"))
+                   for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(overlap["max"], 1)  # never concurrent for one chat
+        agent.store.close()
 
     def test_embeddings_pack_roundtrip_and_cosine(self):
         from engram import embeddings

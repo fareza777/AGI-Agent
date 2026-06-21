@@ -284,6 +284,11 @@ class Agent:
         self._stop = threading.Event()
         self._bg_thread = None
         self._scheduler_thread = None
+        # Per-chat turn lock: a scheduled task and a live user message for the
+        # same chat must not run concurrently, or they interleave tool state and
+        # double-spend the model. Different chats still run in parallel.
+        self._chat_locks = {}
+        self._chat_locks_guard = threading.Lock()
         # Set by the interface (e.g. TelegramBot):
         #   notifier(chat_id, text)        — reminders & scheduled-task results
         #   file_notifier(chat_id, path)   — files produced by scheduled tasks
@@ -292,8 +297,21 @@ class Agent:
         self.file_notifier = None
         self.activity_notifier = None
 
+    def _lock_for(self, chat_id: str) -> threading.Lock:
+        with self._chat_locks_guard:
+            lock = self._chat_locks.get(chat_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._chat_locks[chat_id] = lock
+            return lock
+
     # ---------------- one chat turn ----------------
     def handle_message(self, chat_id: str, user_text: str, images: list = None):
+        """Run one turn, serialized per chat. Returns (reply, [file_paths])."""
+        with self._lock_for(chat_id):
+            return self._handle_message(chat_id, user_text, images)
+
+    def _handle_message(self, chat_id: str, user_text: str, images: list = None):
         """Run one turn. Returns (reply_text, [produced_file_paths]).
 
         images: paths of images attached to this turn (vision)."""

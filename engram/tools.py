@@ -295,6 +295,16 @@ def tool_specs() -> list:
                "subject": {"type": "string"},
                "body": {"type": "string"}},
               ["to", "subject", "body"]),
+        _spec("generate_image",
+              "Generate an image from a text prompt and send it to the user "
+              "(illustrations, diagrams, concept art). Returns an ERROR if image "
+              "generation isn't configured — do not claim to have made an image "
+              "unless the result confirms it.",
+              {"prompt": {"type": "string", "description": "what to draw"},
+               "filename": {"type": "string", "description": "without extension is fine"},
+               "size": {"type": "string",
+                        "description": "e.g. 1024x1024 (default), 1024x1536, 1536x1024"}},
+              ["prompt"]),
     ]
     if config.ENABLE_CODE_TOOL:
         specs.append(_spec(
@@ -333,7 +343,7 @@ _ICONS = {
     "read_file": "📄", "write_file": "✍️", "delete_file": "🗑",
     "search_files": "🔍", "create_document": "📝", "send_file": "📤",
     "git": "🔧", "run_python": "🐍", "run_shell": "💻", "view_image": "👁",
-    "send_email": "✉️",
+    "send_email": "✉️", "generate_image": "🎨",
 }
 # Most-informative arg to show, in priority order.
 _ARG_KEYS = ("query", "url", "path", "filename", "expression", "command",
@@ -353,7 +363,7 @@ def format_activity(name: str, args: dict) -> str:
     return f"{icon} {name}"
 
 
-_FILE_DELIVERY_TOOLS = frozenset({"create_document", "send_file"})
+_FILE_DELIVERY_TOOLS = frozenset({"create_document", "send_file", "generate_image"})
 # Noisy tools — skip live activity lines in Telegram (user sees spam).
 _QUIET_ACTIVITY = frozenset({"list_dir", "read_file", "search_files", "recall"})
 
@@ -760,6 +770,24 @@ def _send_email(args, ctx):
                                  args.get("body", ""))
 
 
+def _generate_image(args, ctx):
+    from . import imagegen
+
+    if not imagegen.available():
+        return ("ERROR: image generation belum dikonfigurasi "
+                "(set ENGRAM_IMAGE_ENDPOINT / ENGRAM_IMAGE_API_KEY).")
+    name = desktop.safe_filename(args.get("filename") or "image")
+    if not name.lower().endswith(".png"):
+        name += ".png"
+    target = desktop.resolve(name, for_write=True)
+    err = imagegen.generate(args["prompt"], str(target),
+                            size=args.get("size") or "1024x1024")
+    if err or not target.is_file() or target.stat().st_size == 0:
+        return f"ERROR: {err or 'gambar tidak terbuat'}"
+    ctx.deliver_file(target)
+    return f"Gambar dibuat dan dikirim ke pengguna: {desktop._rel(target)}."
+
+
 def _run_shell(args, ctx):
     return desktop.run_shell(args["command"])
 
@@ -792,6 +820,7 @@ _HANDLERS = {
     "view_image": _view_image,
     "git": _git,
     "send_email": _send_email,
+    "generate_image": _generate_image,
     "run_python": _run_python,
     "run_shell": _run_shell,
 }
