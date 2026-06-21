@@ -43,7 +43,7 @@ _WHERE_FILE_RE = re.compile(
 # ulang .md draft", "Plan: ... generate versi 2" — but emitted no tool call.
 # This is the dominant stall: it describes the work instead of doing it.
 _PROMISE_RE = re.compile(
-    r"(create_document|write_file|send_file|"
+    r"(create_document|write_file|edit_file|send_file|"
     r"(tulis|menulis)\s+ulang|rewrite|"
     r"generate\s+(versi|ulang|dokumen|file|baru)|"
     r"(akan|aku|saya|nanti|lalu|kemudian|terus)\b[^.\n]{0,60}"
@@ -58,6 +58,7 @@ _STALL_REPLY_RE = re.compile(
 )
 _EXECUTION_NUDGE = (
     "\n\n[INSTRUKSI SISTEM: Wajib eksekusi tool di giliran ini — write_file, "
+    "edit_file untuk mengubah file yang sudah ada, "
     "create_document(source_path=...) untuk docx/pptx, send_file. "
     "Dilarang hanya menjelaskan, minta izin lagi, atau mengutip kegagalan lama.]"
 )
@@ -136,7 +137,7 @@ def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
     is_confirm = bool(_CONFIRM_RE.match(user_text.strip()))
     proposed = bool(
         re.search(
-            r"(write_file|send_file|create_document|\.md|\.docx|\.pptx|"
+            r"(write_file|edit_file|send_file|create_document|\.md|\.docx|\.pptx|"
             r"diagram|tabel|grafik|versi 2|alternatif)",
             prev_assistant,
             re.I,

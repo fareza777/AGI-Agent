@@ -455,6 +455,11 @@ def _esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _pdf_rich(text: str) -> str:
+    """Escape for reportlab, then render **bold** as <b> inline markup."""
+    return _BOLD_RE.sub(r"<b>\1</b>", _esc(str(text or "")))
+
+
 # ---- shared document styling: palette + light markup parsing ----
 _PRIMARY = "1F3864"  # dark blue — titles, table headers
 _ACCENT = "2E74B5"  # medium blue — secondary headings, rules
@@ -882,10 +887,15 @@ def _build_pptx(target, title, sections, table, chart=None):
             tf = textframe(slide, 0.9, 1.6, 11.6, 5.4)
             first = True
             for kind, level, text in chunk:
+                if kind == "rule":
+                    continue  # a markdown '---' rule has no place on a slide
                 par = tf.paragraphs[0] if first else tf.add_paragraph()
                 first = False
                 par.space_after = Pt(10)
                 par.level = level
+                if kind == "heading":
+                    rich(par, _plain(text), 20, accent, bold=True)
+                    continue
                 if kind == "number":
                     counter += 1
                     prefix = f"{counter}.  "
@@ -953,8 +963,9 @@ def _build_pptx(target, title, sections, table, chart=None):
 def _build_pdf(target, title, sections, table, chart=None):
     try:
         from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.platypus import (
+            HRFlowable,
             SimpleDocTemplate,
             Paragraph,
             Spacer,
@@ -968,14 +979,30 @@ def _build_pdf(target, title, sections, table, chart=None):
         docgen.minimal_pdf(target, title, sections, table)
         return
     styles = getSampleStyleSheet()
-    flow = [Paragraph(_esc(title), styles["Title"]), Spacer(1, 12)]
+    body = styles["BodyText"]
+    body_indent = ParagraphStyle("BodyIndent", parent=body, leftIndent=18)
+    flow = [Paragraph(_pdf_rich(title), styles["Title"]), Spacer(1, 12)]
     for s in sections:
         if s.get("heading"):
-            flow.append(Paragraph(_esc(s["heading"]), styles["Heading2"]))
-        if s.get("body"):
-            flow.append(
-                Paragraph(_esc(s["body"]).replace("\n", "<br/>"), styles["BodyText"])
-            )
+            flow.append(Paragraph(_pdf_rich(_plain(s["heading"])), styles["Heading1"]))
+        num = 0
+        for kind, level, text in _parse_lines(s.get("body") or ""):
+            if kind == "heading":
+                style = styles["Heading3"] if level >= 3 else styles["Heading2"]
+                flow.append(Paragraph(_pdf_rich(text), style))
+                num = 0
+            elif kind == "rule":
+                flow.append(HRFlowable(width="100%", thickness=0.5,
+                                       color=colors.grey, spaceBefore=4, spaceAfter=8))
+            elif kind == "bullet":
+                flow.append(Paragraph(_pdf_rich(text),
+                                      body_indent if level else body,
+                                      bulletText="◦" if level else "•"))
+            elif kind == "number":
+                num += 1
+                flow.append(Paragraph(f"{num}. {_pdf_rich(text)}", body))
+            else:
+                flow.append(Paragraph(_pdf_rich(text), body))
         flow.append(Spacer(1, 8))
     if table and table.get("headers"):
         data = [table["headers"]] + [list(r) for r in table.get("rows", [])]

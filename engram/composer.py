@@ -114,6 +114,16 @@ not shown here.
 
   listed below (not just workspace/).
 
+- edit_file: to CHANGE an existing file (code, config, a draft), prefer this
+
+  over write_file — it replaces one exact snippet and leaves the rest intact,
+
+  so you never clobber the file. read_file first, copy an exact unique
+
+  old_string, then edit_file. Use write_file only for brand-new files or a
+
+  full rewrite.
+
 - git: inspect a repository's state (status, log, diff) read-only.
 
 - send_file: deliver an existing workspace file to the user. Same rule: do not
