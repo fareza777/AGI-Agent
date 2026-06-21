@@ -429,22 +429,22 @@ def _build_csv(target, title, sections, table, chart=None):
 
 def _build_html(target, title, sections, table, chart=None):
     out = [
-        f"<!doctype html><html><head><meta charset='utf-8'>",
-        f"<title>{_esc(title)}</title></head><body>",
-        f"<h1>{_esc(title)}</h1>",
+        "<!doctype html><html><head><meta charset='utf-8'>",
+        f"<title>{_esc(title)}</title>{_HTML_STYLE}</head><body>",
+        f"<h1>{_html_rich(title)}</h1>",
     ]
     for s in sections:
         if s.get("heading"):
-            out.append(f"<h2>{_esc(s['heading'])}</h2>")
+            out.append(f"<h2>{_html_rich(_plain(s['heading']))}</h2>")
         if s.get("body"):
-            out.append(f"<p>{_esc(s['body']).replace(chr(10), '<br>')}</p>")
+            out.append(_html_body(s["body"]))
     if table and table.get("headers"):
-        out.append("<table border='1' cellpadding='6' cellspacing='0'><thead><tr>")
-        out += [f"<th>{_esc(str(h))}</th>" for h in table["headers"]]
+        out.append("<table><thead><tr>")
+        out += [f"<th>{_html_rich(str(h))}</th>" for h in table["headers"]]
         out.append("</tr></thead><tbody>")
         for row in table.get("rows", []):
             out.append(
-                "<tr>" + "".join(f"<td>{_esc(str(c))}</td>" for c in row) + "</tr>"
+                "<tr>" + "".join(f"<td>{_html_rich(str(c))}</td>" for c in row) + "</tr>"
             )
         out.append("</tbody></table>")
     out.append("</body></html>")
@@ -458,6 +458,64 @@ def _esc(text: str) -> str:
 def _pdf_rich(text: str) -> str:
     """Escape for reportlab, then render **bold** as <b> inline markup."""
     return _BOLD_RE.sub(r"<b>\1</b>", _esc(str(text or "")))
+
+
+def _html_rich(text: str) -> str:
+    """Escape for HTML, then render **bold** as <strong> inline markup."""
+    return _BOLD_RE.sub(r"<strong>\1</strong>", _esc(str(text or "")))
+
+
+def _html_body(body: str) -> str:
+    """Render a section body's light markup as HTML: headings, rules, bullet/
+    numbered lists, markdown pipe tables, **bold**, and paragraphs."""
+    out, list_tag = [], None
+
+    def close_list():
+        nonlocal list_tag
+        if list_tag:
+            out.append(f"</{list_tag}>")
+            list_tag = None
+
+    for kind, level, payload in _parse_lines(body or ""):
+        if kind in ("bullet", "number"):
+            want = "ul" if kind == "bullet" else "ol"
+            if list_tag != want:
+                close_list()
+                out.append(f"<{want}>")
+                list_tag = want
+            out.append(f"<li>{_html_rich(payload)}</li>")
+            continue
+        close_list()
+        if kind == "heading":
+            tag = "h" + str(min(max(level, 3), 5))  # nest under the section's <h2>
+            out.append(f"<{tag}>{_html_rich(payload)}</{tag}>")
+        elif kind == "rule":
+            out.append("<hr>")
+        elif kind == "table" and payload:
+            out.append("<table>")
+            for ri, row in enumerate(payload):
+                tag = "th" if ri == 0 else "td"
+                out.append("<tr>" + "".join(
+                    f"<{tag}>{_html_rich(c)}</{tag}>" for c in row) + "</tr>")
+            out.append("</table>")
+        else:
+            out.append(f"<p>{_html_rich(payload)}</p>")
+    close_list()
+    return "\n".join(out)
+
+
+_HTML_STYLE = (
+    "<style>"
+    "body{font-family:Calibri,Segoe UI,Arial,sans-serif;color:#262626;"
+    "max-width:820px;margin:32px auto;padding:0 16px;line-height:1.5}"
+    "h1{color:#1F3864}h2{color:#2E74B5;border-bottom:2px solid #2E74B5;"
+    "padding-bottom:4px}h3,h4{color:#1F3864}"
+    "table{border-collapse:collapse;width:100%;margin:12px 0}"
+    "th,td{border:1px solid #BFBFBF;padding:6px 10px;text-align:left}"
+    "th{background:#1F3864;color:#fff}tr:nth-child(even) td{background:#DCE6F1}"
+    "hr{border:none;border-top:1px solid #999;margin:14px 0}"
+    "</style>"
+)
 
 
 # ---- shared document styling: palette + light markup parsing ----
