@@ -117,13 +117,17 @@ def _convert_messages(messages: list, image_fn) -> list:
     return out
 
 
-def chat(system: str, messages: list, max_tokens: int = None, ctx=None) -> str:
+def chat(system: str, messages: list, max_tokens: int = None, ctx=None,
+         on_delta=None) -> str:
     """Conversational turn. When ctx (a tools.ToolContext) is given, the model
     gets the full tool set and we run the agentic loop until it stops calling
-    tools (capped at config.MAX_TOOL_ITERS round trips)."""
+    tools (capped at config.MAX_TOOL_ITERS round trips).
+
+    on_delta(accumulated_text): optional callback fed streaming text of the
+    current response (anthropic provider only) for a live-updating reply."""
     max_tokens = max_tokens or config.MAX_OUTPUT_TOKENS
     if config.PROVIDER == "anthropic":
-        return _anthropic_chat(system, messages, max_tokens, ctx)
+        return _anthropic_chat(system, messages, max_tokens, ctx, on_delta)
     return _openai_chat(config.CHAT_MODEL, system, messages, max_tokens, ctx)
 
 
@@ -143,7 +147,24 @@ def _client():
     return _anthropic_client
 
 
-def _anthropic_chat(system: str, messages: list, max_tokens: int, ctx) -> str:
+def _anthropic_one(messages, params, on_delta):
+    """One model call. Streams text deltas to on_delta when given, else a plain
+    create. Returns the final message object either way."""
+    if on_delta is None:
+        return _client().messages.create(messages=messages, **params)
+    acc = []
+    with _client().messages.stream(messages=messages, **params) as stream:
+        for chunk in stream.text_stream:
+            acc.append(chunk)
+            try:
+                on_delta("".join(acc))
+            except Exception:
+                pass  # a flaky live-edit must never break generation
+        return stream.get_final_message()
+
+
+def _anthropic_chat(system: str, messages: list, max_tokens: int, ctx,
+                    on_delta=None) -> str:
     params = dict(
         model=config.CHAT_MODEL,
         max_tokens=max_tokens,
@@ -153,9 +174,10 @@ def _anthropic_chat(system: str, messages: list, max_tokens: int, ctx) -> str:
     if ctx is not None:
         params["tools"] = tools.tool_specs()
 
+    stream = on_delta is not None and config.STREAM_REPLIES
     messages = _convert_messages(messages, _image_blocks_anthropic)
     for _ in range(config.MAX_TOOL_ITERS):
-        response = _client().messages.create(messages=messages, **params)
+        response = _anthropic_one(messages, params, on_delta if stream else None)
         usage = getattr(response, "usage", None)
         if usage is not None:
             _record_usage(getattr(usage, "input_tokens", 0),

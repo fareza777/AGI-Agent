@@ -980,6 +980,39 @@ class StallRetryTests(unittest.TestCase):
                                                  "halo", self._Ctx()))
 
 
+class LiveReplyStreamingTests(unittest.TestCase):
+    """The live-edited streaming message throttles edits and finalizes once."""
+
+    class _FakeBot:
+        def __init__(self):
+            self.calls = []
+
+        def _call(self, method, **kw):
+            self.calls.append((method, kw))
+            return {"message_id": 99}
+
+    def test_throttle_create_edit_and_finalize(self):
+        from engram.telegram_bot import _LiveReply
+        bot = self._FakeBot()
+        live = _LiveReply(bot, "c1")
+        live.update("Hel")                       # first -> sendMessage (creates)
+        self.assertEqual(bot.calls[0][0], "sendMessage")
+        self.assertEqual(live.message_id, 99)
+        live.update("Hello wor")                 # too soon -> throttled, no edit
+        self.assertEqual(len(bot.calls), 1)
+        live.last_edit = 0                        # pretend interval elapsed
+        live.update("Hello world")               # now edits
+        self.assertEqual(bot.calls[-1][0], "editMessageText")
+        overflow = live.finalize("<b>Hello world</b>")
+        self.assertEqual(bot.calls[-1][0], "editMessageText")
+        self.assertEqual(overflow, [])           # fit in one message
+
+    def test_finalize_without_stream_returns_none(self):
+        from engram.telegram_bot import _LiveReply
+        live = _LiveReply(self._FakeBot(), "c1")
+        self.assertIsNone(live.finalize("anything"))  # nothing streamed
+
+
 class IntegrationsAndChartsTests(unittest.TestCase):
     """Sprint 2/3 additions: connectors gating, charts, embeddings helpers."""
 
@@ -1025,7 +1058,7 @@ class IntegrationsAndChartsTests(unittest.TestCase):
         overlap = {"max": 0, "cur": 0}
         guard = threading.Lock()
 
-        def fake(chat_id, text, images=None):
+        def fake(chat_id, text, images=None, on_delta=None):
             with guard:
                 overlap["cur"] += 1
                 overlap["max"] = max(overlap["max"], overlap["cur"])

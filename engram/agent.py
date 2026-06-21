@@ -306,12 +306,16 @@ class Agent:
             return lock
 
     # ---------------- one chat turn ----------------
-    def handle_message(self, chat_id: str, user_text: str, images: list = None):
-        """Run one turn, serialized per chat. Returns (reply, [file_paths])."""
-        with self._lock_for(chat_id):
-            return self._handle_message(chat_id, user_text, images)
+    def handle_message(self, chat_id: str, user_text: str, images: list = None,
+                       on_delta=None):
+        """Run one turn, serialized per chat. Returns (reply, [file_paths]).
 
-    def _handle_message(self, chat_id: str, user_text: str, images: list = None):
+        on_delta(text): optional live-streaming callback for the reply."""
+        with self._lock_for(chat_id):
+            return self._handle_message(chat_id, user_text, images, on_delta)
+
+    def _handle_message(self, chat_id: str, user_text: str, images: list = None,
+                        on_delta=None):
         """Run one turn. Returns (reply_text, [produced_file_paths]).
 
         images: paths of images attached to this turn (vision)."""
@@ -334,7 +338,7 @@ class Agent:
             file_cb = lambda p: self.file_notifier(chat_id, p)  # noqa: E731
         ctx = ToolContext(self.store, chat_id, activity=activity, file_notifier=file_cb)
         try:
-            reply = llm.chat(system, messages, ctx=ctx)
+            reply = llm.chat(system, messages, ctx=ctx, on_delta=on_delta)
             # The model sometimes narrates file work without calling a tool.
             # Re-run with a hard execution nudge — up to twice, escalating —
             # so a "Plan: ... generate versi 2" answer becomes an actual file

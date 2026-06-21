@@ -80,6 +80,9 @@ MAX_IMAGE_BYTES = 4_500_000
 # Live activity feed: stream compact "🔎 web_search: ..." lines to the chat
 # while the agent works. Set 0 to disable.
 SHOW_ACTIVITY = os.environ.get("ENGRAM_SHOW_ACTIVITY", "1") == "1"
+# Stream the reply token-by-token into one message that's edited live (anthropic
+# provider only). Off by default; the activity feed already shows progress.
+STREAM_REPLIES = os.environ.get("ENGRAM_STREAM_REPLIES", "0") == "1"
 # The run_python tool executes model-written code on your machine. Off by
 # default; enable only if you trust everyone who can message the bot.
 ENABLE_CODE_TOOL = os.environ.get("ENGRAM_ENABLE_CODE_TOOL", "0") == "1"

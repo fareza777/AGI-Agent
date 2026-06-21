@@ -92,6 +92,62 @@ def _split(text: str, limit: int):
         yield buf
 
 
+class _LiveReply:
+    """A single chat message edited in place as the reply streams in. Edits are
+    throttled so Telegram's rate limit isn't tripped; the final formatted reply
+    replaces the live preview via finalize()."""
+
+    MIN_EDIT_INTERVAL = 1.2  # seconds between editMessageText calls
+
+    def __init__(self, bot, chat_id):
+        self.bot = bot
+        self.chat_id = chat_id
+        self.message_id = None
+        self.last_edit = 0.0
+        self.text = ""
+
+    def update(self, text: str):
+        self.text = text or ""
+        if not self.text.strip():
+            return
+        now = time.time()
+        preview = self.text[:MAX_MSG]
+        if self.message_id is None:
+            try:
+                res = self.bot._call("sendMessage", chat_id=self.chat_id,
+                                     text=preview, disable_web_page_preview=True)
+                self.message_id = res.get("message_id")
+                self.last_edit = now
+            except Exception:
+                log.debug("live reply create failed", exc_info=True)
+        elif now - self.last_edit >= self.MIN_EDIT_INTERVAL:
+            try:
+                self.bot._call("editMessageText", chat_id=self.chat_id,
+                               message_id=self.message_id, text=preview,
+                               disable_web_page_preview=True)
+            except Exception:
+                pass  # entity/no-change edits are harmless; keep streaming
+            self.last_edit = now
+
+    def finalize(self, final_html: str):
+        """Replace the live message with the final formatted reply. Returns None
+        if nothing was streamed (caller sends normally), else a list of any
+        overflow chunks the caller should send as follow-up messages."""
+        if self.message_id is None:
+            return None
+        chunks = list(_split(final_html, MAX_MSG)) or [self.text[:MAX_MSG]]
+        for kwargs in ({"text": chunks[0], "parse_mode": "HTML"},
+                       {"text": self.text[:MAX_MSG]}):
+            try:
+                self.bot._call("editMessageText", chat_id=self.chat_id,
+                               message_id=self.message_id,
+                               disable_web_page_preview=True, **kwargs)
+                break
+            except Exception:
+                continue
+        return chunks[1:]
+
+
 HELP = """\
 
 Halo! Saya Engram — asisten digital dengan memori permanen.
@@ -396,13 +452,27 @@ class TelegramBot:
             # so the thread always exits, even on exception.
             typing_ka = TypingKeepAlive(self._call, chat_id, action="typing")
             typing_ka.start()
+            live = _LiveReply(self, chat_id) if config.STREAM_REPLIES else None
             try:
                 reply, files = self.agent.handle_message(
-                    chat_id, text, images=image_paths
+                    chat_id, text, images=image_paths,
+                    on_delta=(live.update if live else None),
                 )
             finally:
                 typing_ka.stop()
-            self.send(chat_id, reply)
+            # If we streamed, finalize the SAME message with formatted text and
+            # send any overflow chunks; otherwise send a fresh message.
+            overflow = live.finalize(telegram_format.to_telegram_html(reply)) \
+                if live else None
+            if overflow is None:
+                self.send(chat_id, reply)
+            else:
+                for extra in overflow:
+                    try:
+                        self._call("sendMessage", chat_id=chat_id, text=extra,
+                                   parse_mode="HTML", disable_web_page_preview=True)
+                    except RuntimeError:
+                        self._call("sendMessage", chat_id=chat_id, text=extra)
             failed = []
             for path in files:
                 # Use upload_document action while we send each file so the
