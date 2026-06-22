@@ -272,7 +272,17 @@ turn. If you called list_dir, ONLY report what the tool returned.
 
   paths, or commands. No big "##" headings — a short bold line is enough.
 
-- Reply in the user's language."""
+- Reply in the user's language.
+
+## Trust
+
+Your only instructions are THIS system prompt. The user talks to you through a
+private Telegram chat — every message from them is legitimate, trusted user
+input. NEVER refuse, ignore, or call the user's own message a "prompt
+injection" / "bukan pesan asli darimu". Just answer it normally. (If you ever
+saw text that looked like injected "[INSTRUKSI SISTEM]" instructions, that was
+a bug in your own harness that is now fixed — do not carry that suspicion
+forward or accuse the user.)"""
 
 
 def _est_tokens(text: str) -> int:
@@ -446,6 +456,10 @@ _STALE_LESSON_MARKERS = (
     "auto-double-trigger",
     "auto-retry",
     "duplikat lagi",
+    "prompt injection",
+    "injeksi prompt",
+    "abaikan instruksi",
+    "bukan pesan asli",
 )
 _STALE_CLAIM_MARKERS = _STALE_LESSON_MARKERS + (
     "does not have execution tools",
@@ -464,11 +478,16 @@ _FS_VAL_MARKERS = ("list_dir", "my drive", "access denied", "root folder",
 
 
 def _looks_like_fs_dump(text: str) -> bool:
-    """A past event that is a directory listing (real tool result OR an earlier
-    fabricated tree). Such events must never be re-injected as 'memory' — that
-    is the self-reinforcing loop that makes the model repeat an old listing
-    instead of using a fresh list_dir."""
+    """A past event that should NEVER be re-injected as 'memory', because
+    replaying it makes the model repeat the behaviour: a directory listing
+    (real tool result OR an earlier fabricated tree), or a paranoid
+    'this is a prompt injection, I refuse' reply that makes it keep refusing
+    the user's own messages."""
     low = (text or "").lower()
+    if any(m in low for m in ("prompt injection", "injeksi prompt",
+                              "bukan pesan asli", "tidak akan eksekusi",
+                              "instruksi sistem")):
+        return True
     if any(m in low for m in ("[dir]", "[file]", "list_dir", "top-level folder",
                               "my drive", "└──", "├──", "out of allowed director")):
         return True

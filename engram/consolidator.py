@@ -81,9 +81,18 @@ _FS_VAL_MARKERS = ("list_dir", "my drive", "access denied", "root folder",
                    "out of allowed director")
 
 
+_NOSTORE_VAL_MARKERS = _FS_VAL_MARKERS + (
+    "prompt injection", "injeksi prompt", "abaikan instruksi", "bukan pesan asli",
+)
+
+
 def _is_volatile_fs_claim(predicate: str, value: str) -> bool:
     p, v = (predicate or "").lower(), (value or "").lower()
-    return any(t in p for t in _FS_PRED_TOKENS) or any(m in v for m in _FS_VAL_MARKERS)
+    # Skip volatile filesystem state AND self-referential "prompt injection"
+    # meta-lessons — storing the latter makes the agent refuse the user's own
+    # messages as attacks on later turns.
+    return any(t in p for t in _FS_PRED_TOKENS) or any(
+        m in v for m in _NOSTORE_VAL_MARKERS)
 
 _INSIGHT_SCHEMA = {
     "type": "object",
