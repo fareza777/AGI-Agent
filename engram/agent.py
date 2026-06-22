@@ -60,10 +60,13 @@ _STALL_REPLY_RE = re.compile(
     re.I,
 )
 _EXECUTION_NUDGE = (
-    "\n\n[INSTRUKSI SISTEM: Wajib eksekusi tool di giliran ini — write_file, "
-    "edit_file untuk mengubah file yang sudah ada, "
-    "create_document(source_path=...) untuk docx/pptx, send_file. "
-    "Dilarang hanya menjelaskan, minta izin lagi, atau mengutip kegagalan lama.]"
+    "\n\n## EXECUTION (giliran ini)\n"
+    "Kalau giliran ini meminta membuat atau mengirim file/laporan/dokumen, kamu "
+    "WAJIB benar-benar memanggil tool-nya di giliran ini — jangan hanya "
+    "menjelaskan rencana, minta izin lagi, atau mengaku draft sudah ada. Kalau "
+    "merender dari source_path, write_file dulu draft .md-nya di giliran ini "
+    "(jangan anggap sudah ada), baru create_document(source_path=...). Pakai "
+    "send_file untuk mengirim file yang sudah ada."
 )
 # Pre-tool gate: when the user asks about a folder/drive/listing, we
 # inject a real list_dir result into the context BEFORE the LLM reasons.
@@ -147,8 +150,12 @@ def _fs_preflight(user_text: str, store=None, chat_id=None) -> str | None:
     )
 
 
-def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
-    """Push the model to call tools when the user wants files or confirmed a plan."""
+def _execution_directive(user_text: str, store: Store, chat_id: str) -> str:
+    """Return a SYSTEM-prompt addendum (or "") that pushes the model to call
+    tools when the user wants files or confirmed a plan. It goes in the system
+    prompt, NOT appended to the user message — embedding instructions in user
+    content makes injection-aware models refuse it (and the user's real request)
+    as a prompt-injection attack."""
     tail = store.recent_events(chat_id, config.CONVERSATION_TAIL)
     prev_assistant = next(
         (e["content"] for e in reversed(tail) if e["actor"] == "agent"), ""
@@ -157,7 +164,7 @@ def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
     proposed = bool(
         re.search(
             r"(write_file|edit_file|send_file|create_document|\.md|\.docx|\.pptx|"
-            r"diagram|tabel|grafik|versi 2|alternatif)",
+            r"diagram|tabel|grafik|versi 2|alternatif|render)",
             prev_assistant,
             re.I,
         )
@@ -165,12 +172,11 @@ def _inject_execution_nudge(user_text: str, store: Store, chat_id: str) -> str:
     # After the agent proposed a document/edit, ANY follow-up (a confirmation,
     # an instruction like "tambah diagram dan tabel", or "mana hasilnya") means
     # execute now — not just bare "ya".
-    if proposed and (is_confirm or _FILE_TASK_RE.search(user_text)
-                     or _WHERE_FILE_RE.search(user_text.strip())):
-        return user_text + _EXECUTION_NUDGE
-    if _FILE_TASK_RE.search(user_text) or _WHERE_FILE_RE.search(user_text.strip()):
-        return user_text + _EXECUTION_NUDGE
-    return user_text
+    if (proposed and (is_confirm or _FILE_TASK_RE.search(user_text)
+                      or _WHERE_FILE_RE.search(user_text.strip()))) or \
+       _FILE_TASK_RE.search(user_text) or _WHERE_FILE_RE.search(user_text.strip()):
+        return _EXECUTION_NUDGE
+    return ""
 
 
 def _should_retry_for_tools(reply: str, user_text: str, ctx: ToolContext) -> bool:
@@ -286,11 +292,11 @@ _FS_LISTING_RE = re.compile(
 # A bullet / tree / path line that names a directory entry.
 _FS_ENTRY_RE = re.compile(r"^\s*(?:[•·\-\*]|[├└]──|\|──|📁|📂|📄)\s*(.+?)\s*$")
 _FS_FORCE_NUDGE = (
-    "[INSTRUKSI SISTEM TEGAS: Daftar folder yang Anda tampilkan TIDAK cocok "
-    "dengan hasil tool list_dir (atau Anda belum memanggilnya) — itu fabrikasi "
-    "dan dilarang keras. Panggil tool list_dir pada path yang dimaksud (mis. "
-    "'G:/My Drive') SEKARANG, lalu salin PERSIS nama yang dikembalikan tool — "
-    "jangan tambah, ubah, atau karang nama. Jika path belum jelas, TANYAKAN.]"
+    "Daftar folder yang kamu tampilkan tidak cocok dengan hasil tool list_dir "
+    "(atau kamu belum memanggilnya). Tolong panggil tool list_dir pada path "
+    "yang dimaksud (mis. 'G:/My Drive') sekarang, lalu salin PERSIS nama yang "
+    "dikembalikan tool — jangan menambah, mengubah, atau mengarang nama. Kalau "
+    "path-nya belum jelas, tanyakan dulu ke aku."
 )
 
 
@@ -410,16 +416,19 @@ class Agent:
 
         images: paths of images attached to this turn (vision)."""
         self.store.log_event("user", "message", user_text, chat_id)
-        nudged = _inject_execution_nudge(user_text, self.store, chat_id)
-        system, messages = composer.build_context(self.store, chat_id, nudged)
+        system, messages = composer.build_context(self.store, chat_id, user_text)
+        # Execution directive goes in the SYSTEM prompt (a trusted instruction),
+        # never appended to the user message — embedding "instructions" in user
+        # content makes injection-aware models reject it AND the real request.
+        system += _execution_directive(user_text, self.store, chat_id)
         # FS preflight: inject real list_dir output for drive/folder queries
         # so the model has ground truth and can't invent folder names.
-        fs_note = _fs_preflight(nudged, self.store, chat_id)
+        fs_note = _fs_preflight(user_text, self.store, chat_id)
         if fs_note:
             messages.append({"role": "user", "content": fs_note})
             log.info("fs-preflight fired for: %s", user_text[:80])
         if images:
-            messages[-1] = {"role": "user", "content": nudged, "images": images}
+            messages[-1] = {"role": "user", "content": user_text, "images": images}
         activity = None
         if self.activity_notifier is not None and config.SHOW_ACTIVITY:
             activity = lambda text: self.activity_notifier(chat_id, text)  # noqa: E731
@@ -447,12 +456,13 @@ class Agent:
                 escalation = _EXECUTION_NUDGE.strip()
                 if attempt == 1:
                     escalation = (
-                        "[INSTRUKSI SISTEM TEGAS: Anda SUDAH dua kali hanya "
-                        "menjelaskan rencana tanpa hasil. SEKARANG panggil tool: "
-                        "write_file untuk draft .md, lalu create_document("
-                        "source_path=...) — JANGAN balas teks tanpa memanggil "
-                        "tool. Jika konten besar, potong jadi beberapa write_file "
-                        "append lalu satu create_document.]"
+                        "Kamu sudah dua kali cuma menjelaskan tanpa hasil. "
+                        "Sekarang langsung kerjakan: write_file untuk membuat "
+                        "draft .md-nya dulu (jangan anggap sudah ada), lalu "
+                        "create_document(source_path=...). Tolong panggil "
+                        "tool-nya, jangan balas teks saja. Kalau kontennya besar, "
+                        "potong jadi beberapa write_file append lalu satu "
+                        "create_document."
                     )
                 messages.append({"role": "user", "content": escalation})
                 reply = llm.chat(system, messages, ctx=ctx)

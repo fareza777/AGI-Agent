@@ -16,7 +16,7 @@ from engram import config, composer, identity, skills, desktop, telegram_format 
 from engram.llm import parse_json, strip_reasoning  # noqa: E402
 from engram.tools import ToolContext, run_tool  # noqa: E402
 from engram.agent import (  # noqa: E402
-    _guard_file_claims, _inject_execution_nudge, _should_retry_for_tools,
+    _guard_file_claims, _execution_directive, _should_retry_for_tools,
 )
 from engram.composer import _filter_stale_lessons  # noqa: E402
 
@@ -928,14 +928,21 @@ class ExecutionNudgeTests(unittest.TestCase):
         os.unlink(self.db)
 
     def test_nudge_on_file_request(self):
-        out = _inject_execution_nudge("buat laporan word justify", self.store, "c1")
-        self.assertIn("INSTRUKSI SISTEM", out)
+        # The directive is a SYSTEM-prompt addendum (not appended to user text,
+        # which injection-aware models reject); it must NOT use a fake
+        # "[INSTRUKSI SISTEM]" tag that trips prompt-injection defenses.
+        out = _execution_directive("buat laporan word justify", self.store, "c1")
+        self.assertIn("EXECUTION", out)
+        self.assertNotIn("INSTRUKSI SISTEM", out)
 
     def test_nudge_on_confirmation(self):
         self.store.log_event("agent", "message",
                              "Mau lanjut? Alternatif write_file + send_file", "c1")
-        out = _inject_execution_nudge("ya", self.store, "c1")
-        self.assertIn("INSTRUKSI SISTEM", out)
+        out = _execution_directive("ya", self.store, "c1")
+        self.assertIn("EXECUTION", out)
+
+    def test_no_directive_on_chitchat(self):
+        self.assertEqual(_execution_directive("halo apa kabar", self.store, "c1"), "")
 
     def test_nudge_on_followup_instruction_after_proposal(self):
         # Reproduces the stuck screenshot: agent offered to add diagram/table,
@@ -943,10 +950,10 @@ class ExecutionNudgeTests(unittest.TestCase):
         self.store.log_event("agent", "message",
                              "Mau aku tambahin diagram alur loop atau tabel "
                              "perbandingan lebih dalam?", "c1")
-        out = _inject_execution_nudge("Tambah diagram dan tabel", self.store, "c1")
-        self.assertIn("INSTRUKSI SISTEM", out)
-        out2 = _inject_execution_nudge("Mana hasilnya", self.store, "c1")
-        self.assertIn("INSTRUKSI SISTEM", out2)
+        out = _execution_directive("Tambah diagram dan tabel", self.store, "c1")
+        self.assertIn("EXECUTION", out)
+        out2 = _execution_directive("Mana hasilnya", self.store, "c1")
+        self.assertIn("EXECUTION", out2)
 
 
 class StallRetryTests(unittest.TestCase):
