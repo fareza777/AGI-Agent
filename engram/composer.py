@@ -360,8 +360,9 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
         store.search_claims(user_text, limit=config.MAX_RETRIEVED_CLAIMS,
                             chat_id=chat_id)
     )
-    # Highest-confidence beliefs survive trimming; weakest are dropped first.
-    claims = sorted(claims, key=lambda c: c["confidence"], reverse=True)
+    # Rank by AGE-DECAYED confidence so a stale high-confidence belief no longer
+    # outranks newer ones forever — old beliefs are dropped first under budget.
+    claims = sorted(claims, key=lambda c: _decayed_conf(c, now_utc), reverse=True)
     if claims:
         lines = ["## MEMORY — beliefs (claims)"]
         for c in claims:
@@ -378,8 +379,14 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
     episodes = store.search_events(user_text, limit=config.MAX_RETRIEVED_EPISODES,
                                    chat_id=chat_id)
     tail_ids = {e["id"] for e in store.recent_events(chat_id, config.CONVERSATION_TAIL)}
+    # ROOT FIX: episodic memory replays only what the USER said — never the
+    # agent's own past generated text. Re-injecting the agent's old replies as
+    # "memory" is what let a single fabrication/refusal reinforce itself into a
+    # loop. Distilled facts already live in beliefs; recent dialogue is in the
+    # conversation tail. (system/tool dumps are noise here too.)
     episodes = [e for e in episodes
-                if e["id"] not in tail_ids and not _looks_like_fs_dump(e["content"])]
+                if e["id"] not in tail_ids and e["actor"] == "user"
+                and not _looks_like_fs_dump(e["content"])]
     if episodes:
         lines = ["## MEMORY — past episode excerpts"]
         for e in episodes:
@@ -475,6 +482,23 @@ _FS_PRED_TOKENS = ("drive", "folder", "sandbox", "director", "layout",
                    "root_content", "root_folder", "filesystem", "file_system")
 _FS_VAL_MARKERS = ("list_dir", "my drive", "access denied", "root folder",
                    "g:\\", "out of allowed director")
+
+
+def _decayed_conf(claim: dict, now) -> float:
+    """Confidence with a gentle age decay (loses up to ~0.25 over a year) so a
+    once-stated belief doesn't dominate retrieval forever. Bounded — a strong
+    fact stays strong; only ranking under budget pressure is affected."""
+    try:
+        s = (claim["valid_from"] or "")[:19].replace("T", " ")
+        vf = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        age_days = max(0, (now.replace(tzinfo=None) - vf).days)
+    except (ValueError, TypeError, KeyError, IndexError):
+        age_days = 0
+    try:
+        conf = float(claim["confidence"])
+    except (ValueError, TypeError, KeyError, IndexError):
+        conf = 0.5
+    return conf - min(0.25, age_days / 365 * 0.25)
 
 
 def _looks_like_fs_dump(text: str) -> bool:
