@@ -46,8 +46,11 @@ _PROMISE_RE = re.compile(
     r"(create_document|write_file|edit_file|send_file|"
     r"(tulis|menulis)\s+ulang|rewrite|"
     r"generate\s+(versi|ulang|dokumen|file|baru)|"
+    # "langsung render ke .docx", "tinggal render", "render ke pdf", "sudah ada draf"
+    r"\brender\w*\b|(sudah|udah|tinggal)\s+(ada\s+)?(draf|draft|render)|"
+    r"(langsung|tinggal)\s+(render|buat|bikin|generate|kirim|export|susun)|"
     r"(akan|aku|saya|nanti|lalu|kemudian|terus)\b[^.\n]{0,60}"
-    r"(create_document|write_file|generate|tulis ulang|buat\s+(file|dokumen|docx|laporan))|"
+    r"(create_document|write_file|generate|render|tulis ulang|buat\s+(file|dokumen|docx|laporan))|"
     r"^\s*(plan|rencana)\s*:)",
     re.I | re.M,
 )

@@ -59,7 +59,7 @@ CONVERSATION_TAIL = 16  # recent events included verbatim
 # JSON. Static identity/instructions/capabilities are always kept.
 MAX_CONTEXT_TOKENS = int(os.environ.get("ENGRAM_MAX_CONTEXT_TOKENS", "12000"))
 # Tool layer
-MAX_TOOL_ITERS = 10  # max tool-use round trips per turn
+MAX_TOOL_ITERS = int(os.environ.get("ENGRAM_MAX_TOOL_ITERS", "14"))  # tool round trips/turn
 SKILLS_DIR = PROJECT_ROOT / "skills"
 REMINDER_POLL_SEC = 30  # scheduler tick
 # Digital-assistant workspace. All file/document tools are sandboxed to dirs in
