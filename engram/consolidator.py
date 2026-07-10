@@ -58,6 +58,12 @@ Rules:
   slot — that is how the agent detects when something changed.
 - confidence: 0.95 for the user's explicit statements, 0.7 for clear
   implications, 0.5 for guesses.
+- GROUNDING: a "fact" or "preference" claim must be grounded in something the
+  USER said (events whose actor is user). NEVER distill a fact/preference from
+  text that appears only in agent turns — the agent's own replies may contain
+  errors or fabrications, and storing them as beliefs makes those errors
+  permanent. Agent turns are only evidence for "lesson" claims (what the agent
+  did wrong / should do differently).
 - kind "lesson" is for things the agent should do differently next time. Watch
   specifically for: the user correcting the agent, a tool call that failed and
   how it was fixed, output the user disliked (format, length, language). Write

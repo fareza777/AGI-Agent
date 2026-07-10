@@ -127,10 +127,11 @@ def _fs_preflight(user_text: str, store=None, chat_id=None) -> str | None:
 
     path = _path_from_text(user_text) or _recent_fs_path(store, chat_id)
     if not path:
-        return (
-            "FS-PREFLIGHT: no drive letter in the query. Ask the user to "
-            "specify the path (e.g. 'D:/', 'G:/My Drive/...')."
-        )
+        # No resolvable path (the FS regex also matches phrases like "baca
+        # file X" that aren't listing queries). Injecting an "ask for the
+        # path" note here derailed ordinary file requests — stay silent and
+        # let the system-prompt rules (list_dir-first, ask if unclear) apply.
+        return None
     try:
         result = desktop.list_dir(path)
     except Exception as exc:
@@ -356,13 +357,15 @@ def _guard_unsourced_links(reply: str, ctx: ToolContext) -> str:
     any tool result this turn — the classic 'invented a plausible-looking
     source' hallucination. We don't delete them (could be legitimately recalled
     from memory), but we warn the user the links weren't verified this turn."""
-    domains = {m.group(1).lower().lstrip("www.") for m in _URL_RE.finditer(reply)}
+    # NB: str.lstrip("www.") strips *characters*, not the prefix — it mangles
+    # domains like weather.com into "eather.com" and produces false
+    # "unverified link" warnings. Use removeprefix.
+    domains = {m.group(1).lower().removeprefix("www.")
+               for m in _URL_RE.finditer(reply)}
     if not domains:
         return reply
     tool_text = "\n".join(ctx.tool_output).lower()
-    unsourced = sorted(
-        d for d in domains if d.lstrip("www.") not in tool_text and d not in tool_text
-    )
+    unsourced = sorted(d for d in domains if d not in tool_text)
     if not unsourced:
         return reply
     listed = ", ".join(unsourced[:5])
@@ -465,7 +468,9 @@ class Agent:
                         "create_document."
                     )
                 messages.append({"role": "user", "content": escalation})
-                reply = llm.chat(system, messages, ctx=ctx)
+                # tool_choice-level forcing: the retry MUST start with a tool
+                # call — a repeat text-only answer is exactly the stall.
+                reply = llm.chat(system, messages, ctx=ctx, force_tools=True)
             # The model presented a directory listing without ever calling
             # list_dir — force it to actually fetch instead of inventing.
             for attempt in range(2):
@@ -475,7 +480,7 @@ class Agent:
                          attempt + 1)
                 messages.append({"role": "assistant", "content": reply})
                 messages.append({"role": "user", "content": _FS_FORCE_NUDGE})
-                reply = llm.chat(system, messages, ctx=ctx)
+                reply = llm.chat(system, messages, ctx=ctx, force_tools=True)
         except Exception as exc:
             log.exception("chat model call failed")
             reply = f"⚠️ Gagal: {llm.describe_error(exc)}."

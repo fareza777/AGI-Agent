@@ -386,7 +386,7 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
     # conversation tail. (system/tool dumps are noise here too.)
     episodes = [e for e in episodes
                 if e["id"] not in tail_ids and e["actor"] == "user"
-                and not _looks_like_fs_dump(e["content"])]
+                and not _looks_like_fs_dump(e["content"], e["actor"])]
     if episodes:
         lines = ["## MEMORY — past episode excerpts"]
         for e in episodes:
@@ -406,7 +406,8 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
         memory.append("\n".join(lines))
     # S10 learning loop: lessons distilled from past mistakes are always in
     # view (not just when keywords match), so the same mistake isn't repeated.
-    lesson_rows = _filter_stale_lessons(store.recent_lessons(limit=8))
+    lesson_rows = _filter_stale_lessons(
+        store.recent_lessons(limit=8, chat_id=chat_id))
     seen = {c["id"] for c in claims}
     lesson_rows = [l for l in lesson_rows if l["id"] not in seen]
     if lesson_rows:
@@ -434,7 +435,7 @@ def _conversation_tail(store: Store, chat_id: str) -> list:
         # Never replay a directory listing (a real tool dump, or an earlier
         # fabricated tree) as conversation history — that is what makes the
         # model repeat an old/invented listing instead of using a fresh one.
-        if _looks_like_fs_dump(e["content"]):
+        if _looks_like_fs_dump(e["content"], e["actor"]):
             continue
         role = "assistant" if e["actor"] == "agent" else "user"
         messages.append({"role": role, "content": e["content"]})
@@ -501,13 +502,24 @@ def _decayed_conf(claim: dict, now) -> float:
     return conf - min(0.25, age_days / 365 * 0.25)
 
 
-def _looks_like_fs_dump(text: str) -> bool:
+def _looks_like_fs_dump(text: str, actor: str = "agent") -> bool:
     """A past event that should NEVER be re-injected as 'memory', because
     replaying it makes the model repeat the behaviour: a directory listing
     (real tool result OR an earlier fabricated tree), or a paranoid
     'this is a prompt injection, I refuse' reply that makes it keep refusing
-    the user's own messages."""
+    the user's own messages.
+
+    actor scoping: the aggressive keyword rules apply only to agent/system
+    text. A USER message mentioning "my drive" or containing a bullet list is
+    the user's own words — dropping it from history made the agent look
+    amnesiac about the request it was just given. For user text, only an
+    actual pasted tree (├──/└── lines) counts as a dump."""
     low = (text or "").lower()
+    tree_lines = sum(1 for ln in text.splitlines()
+                     if ln.strip()[:3] in ("├──", "└──")
+                     or ln.strip()[:1] in ("├", "└"))
+    if actor == "user":
+        return tree_lines >= 4
     if any(m in low for m in ("prompt injection", "injeksi prompt",
                               "bukan pesan asli", "tidak akan eksekusi",
                               "instruksi sistem")):

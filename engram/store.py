@@ -504,12 +504,19 @@ class Store:
 
     # ---------------- lessons (S10 learning loop) ----------------
 
-    def recent_lessons(self, limit: int = 5) -> list:
+    def recent_lessons(self, limit: int = 5, chat_id: str = None) -> list:
+        # Scope to this chat (+ global NULL-chat rows) like the other memory
+        # queries, so one chat's lessons never steer another chat's behaviour.
+        scope, params = "", []
+        if chat_id is not None:
+            scope = "AND (chat_id = ? OR chat_id IS NULL) "
+            params.append(chat_id)
+        params.append(limit)
         with self._lock:
             return self._conn.execute(
                 "SELECT * FROM claims WHERE kind='lesson' AND valid_to IS NULL "
-                "ORDER BY id DESC LIMIT ?",
-                (limit,),
+                f"{scope}ORDER BY id DESC LIMIT ?",
+                tuple(params),
             ).fetchall()
 
     # ---------------- meta (e.g. Telegram update offset) ----------------

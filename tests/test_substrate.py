@@ -1103,5 +1103,78 @@ class IntegrationsAndChartsTests(unittest.TestCase):
                           {"type": "bar", "value_col": 0}, "/tmp/none.png"))
 
 
+class AntiHallucinationFixTests(unittest.TestCase):
+    """Regression tests for the hallucination-engine audit fixes."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.path)
+
+    def test_unsourced_link_guard_handles_www_prefix(self):
+        # str.lstrip("www.") mangled domains starting with w/dot; a link whose
+        # domain DID come back from a tool must not be flagged as unverified.
+        from engram.agent import _guard_unsourced_links
+        ctx = ToolContext(self.store, "c1")
+        ctx.tool_output.append("result from https://weather.com/today ok")
+        reply = "Sumber: https://www.weather.com/today"
+        self.assertEqual(_guard_unsourced_links(reply, ctx), reply)
+        # A genuinely invented domain is still flagged.
+        bad = "Sumber: https://made-up-source.example"
+        self.assertIn("belum terverifikasi", _guard_unsourced_links(bad, ctx))
+
+    def test_user_bullet_message_stays_in_tail(self):
+        # A user's own bullet list is not an FS dump — dropping it made the
+        # agent look amnesiac about the request it was just given.
+        user_msg = ("tolong buat laporan berisi:\n- pendahuluan\n- metode\n"
+                    "- hasil\n- diskusi\n- kesimpulan\n- lampiran")
+        self.assertFalse(composer._looks_like_fs_dump(user_msg, "user"))
+        # The same shape from the agent is still filtered.
+        self.assertTrue(composer._looks_like_fs_dump(
+            "isi folder:\n- a\n- b\n- c\n- d\n- e\n- f", "agent"))
+        # A user PASTING an actual tree is still treated as a dump.
+        tree = "\n".join("├── folder%d" % i for i in range(5))
+        self.assertTrue(composer._looks_like_fs_dump(tree, "user"))
+
+    def test_user_mention_of_my_drive_stays_in_tail(self):
+        self.assertFalse(composer._looks_like_fs_dump(
+            "coba cek my drive dong", "user"))
+        self.assertTrue(composer._looks_like_fs_dump(
+            "isi My Drive kamu: ...", "agent"))
+
+    def test_fs_preflight_silent_when_no_path(self):
+        # "baca file X" matches the FS regex but has no path — the preflight
+        # must stay silent instead of injecting an "ask for the path" note.
+        from engram.agent import _fs_preflight
+        self.assertIsNone(_fs_preflight("baca file config.py", self.store, "c1"))
+
+    def test_lessons_scoped_per_chat(self):
+        self.store.add_claim("agent", "lesson_a", "chat-1 lesson",
+                             "lesson", 0.9, [], "c1")
+        self.store.add_claim("agent", "lesson_b", "chat-2 lesson",
+                             "lesson", 0.9, [], "c2")
+        self.store.add_claim("agent", "lesson_c", "global lesson",
+                             "lesson", 0.9, [], None)
+        values = {r["value"] for r in self.store.recent_lessons(8, chat_id="c1")}
+        self.assertIn("chat-1 lesson", values)
+        self.assertIn("global lesson", values)
+        self.assertNotIn("chat-2 lesson", values)
+
+    def test_temperature_config_parses(self):
+        import importlib
+        os.environ["ENGRAM_TEMPERATURE"] = "0.3"
+        try:
+            importlib.reload(config)
+            self.assertEqual(config.TEMPERATURE, 0.3)
+        finally:
+            del os.environ["ENGRAM_TEMPERATURE"]
+            importlib.reload(config)
+        self.assertIsNone(config.TEMPERATURE)
+
+
 if __name__ == "__main__":
     unittest.main()
