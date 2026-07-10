@@ -15,7 +15,7 @@ Both run from a background thread (see agent.py) and on demand via /reflect.
 import json
 import logging
 
-from . import llm
+from . import hygiene, llm
 from .store import Store
 
 log = logging.getLogger("engram.consolidator")
@@ -78,27 +78,11 @@ Rules:
   *contents* of any folder are not.)
 - Return an empty list if nothing is worth remembering."""
 
-# Volatile filesystem state must never become a long-term belief — it goes stale
-# and poisons future prompts (the model parrots an old/invented listing instead
-# of calling list_dir). The LLM is told this above; this is the hard backstop.
-_FS_PRED_TOKENS = ("drive", "folder", "sandbox", "director", "layout",
-                   "root_content", "root_folder", "filesystem", "file_system")
-_FS_VAL_MARKERS = ("list_dir", "my drive", "access denied", "root folder",
-                   "out of allowed director")
-
-
-_NOSTORE_VAL_MARKERS = _FS_VAL_MARKERS + (
-    "prompt injection", "injeksi prompt", "abaikan instruksi", "bukan pesan asli",
-)
-
-
-def _is_volatile_fs_claim(predicate: str, value: str) -> bool:
-    p, v = (predicate or "").lower(), (value or "").lower()
-    # Skip volatile filesystem state AND self-referential "prompt injection"
-    # meta-lessons — storing the latter makes the agent refuse the user's own
-    # messages as attacks on later turns.
-    return any(t in p for t in _FS_PRED_TOKENS) or any(
-        m in v for m in _NOSTORE_VAL_MARKERS)
+# Volatile filesystem state and self-referential meta-lessons must never
+# become long-term beliefs. The LLM is told this above; hygiene.is_poisoned is
+# the hard backstop (shared with the composer's retrieval filter and the
+# store's quarantine pass).
+_is_volatile_fs_claim = hygiene.is_poisoned
 
 _INSIGHT_SCHEMA = {
     "type": "object",
@@ -199,9 +183,90 @@ def consolidate(store: Store) -> dict:
     return {"events": total_events, "new": total_new, "updated": total_updated}
 
 
+_SWEEP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "conflicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id_a": {"type": "integer"},
+                    "id_b": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["id_a", "id_b", "reason"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["conflicts"],
+    "additionalProperties": False,
+}
+
+_SWEEP_SYSTEM = """\
+You are the belief-hygiene module of a personal AI agent. You receive the
+agent's active beliefs about ONE subject, each with a numeric id. Identify
+pairs that CANNOT both be true at the same time right now (e.g. "works in
+Berlin" vs "commutes to the Paris office daily", "is vegetarian" vs "favorite
+food is steak"). Slot updates are already handled elsewhere — only report
+IMPLICIT contradictions across different predicates. Be conservative: two
+beliefs that merely look unrelated or redundant are NOT a conflict. Return an
+empty list when in doubt."""
+
+
+def sweep_contradictions(store: Store, max_subjects: int = 6) -> list:
+    """S4 stage 2: sample subjects that hold several active claims and ask the
+    model to spot implicit contradictions structure alone misses. Confirmed
+    pairs are marked disputed (flag + confidence haircut) — surfaced as
+    DISPUTED whenever retrieved, never silently believed. Returns the list of
+    conflicts found."""
+    claims = [c for c in store.active_claims(limit=200)
+              if not hygiene.is_poisoned(c["predicate"], c["value"])
+              and c["kind"] in ("fact", "preference")
+              and not c["disputed"]]
+    by_subject = {}
+    for c in claims:
+        by_subject.setdefault(c["subject"], []).append(c)
+    crowded = sorted(
+        (group for group in by_subject.values() if len(group) >= 2),
+        key=len, reverse=True,
+    )[:max_subjects]
+
+    found = []
+    for group in crowded:
+        valid_ids = {c["id"] for c in group}
+        beliefs = "\n".join(
+            f"- [id {c['id']}] {c['subject']} | {c['predicate']} | {c['value']} "
+            f"(since {c['valid_from'][:10]})"
+            for c in group
+        )
+        try:
+            result = llm.extract(_SWEEP_SYSTEM, f"BELIEFS:\n{beliefs}",
+                                 _SWEEP_SCHEMA, max_tokens=1500)
+        except Exception:
+            log.exception("contradiction sweep failed for subject %r — skipping",
+                          group[0]["subject"])
+            continue
+        for con in result.get("conflicts", []):
+            a, b = con.get("id_a"), con.get("id_b")
+            if a not in valid_ids or b not in valid_ids or a == b:
+                continue  # hallucinated ids — ignore
+            store.mark_disputed([a, b])
+            found.append({"id_a": a, "id_b": b,
+                          "reason": str(con.get("reason", ""))[:300]})
+    if found:
+        store.log_event("system", "contradiction_sweep",
+                        json.dumps({"conflicts": found}))
+    return found
+
+
 def reflect(store: Store, chat_id: str = None) -> list:
     """One reflection pass. Returns the list of new insight claims (as dicts)."""
-    claims = store.active_claims(limit=120)
+    # Poisoned rows are excluded so reflection can't launder a bad belief into
+    # a fresh "insight" (they're also quarantined by memory maintenance).
+    claims = [c for c in store.active_claims(limit=120)
+              if not hygiene.is_poisoned(c["predicate"], c["value"])]
     if len(claims) < 5:
         return []
 

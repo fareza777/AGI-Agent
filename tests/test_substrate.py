@@ -1176,5 +1176,105 @@ class AntiHallucinationFixTests(unittest.TestCase):
         self.assertIsNone(config.TEMPERATURE)
 
 
+class BeliefHygieneTests(unittest.TestCase):
+    """Quarantine, /forget, /audit scoping, and the contradiction sweep."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.path)
+
+    def test_quarantine_closes_poisoned_claims(self):
+        good = self.store.add_claim("user", "works_at", "Acme", "fact", 0.9, [], "c1")
+        self.store.add_claim("agent", "lesson_x",
+                             "create_document silent-fail on server engram",
+                             "lesson", 0.9, [], "c1")
+        self.store.add_claim("user", "d_drive_contents", "Sandbox, KCL",
+                             "fact", 0.9, [], "c1")
+        n = self.store.quarantine_poisoned_claims()
+        self.assertEqual(n, 2)
+        active = {c["id"] for c in self.store.active_claims()}
+        self.assertEqual(active, {good["id"]})
+        # Idempotent: a second pass finds nothing.
+        self.assertEqual(self.store.quarantine_poisoned_claims(), 0)
+
+    def test_maintain_memory_reports_quarantine(self):
+        self.store.add_claim("agent", "root_folder_layout", "a, b, c",
+                             "fact", 0.9, [], "c1")
+        stats = self.store.maintain_memory()
+        self.assertEqual(stats["quarantined"], 1)
+
+    def test_retire_claim_scoped_to_chat(self):
+        mine = self.store.add_claim("user", "food_preference", "sate",
+                                    "preference", 0.9, [], "c1")
+        theirs = self.store.add_claim("user", "food_preference", "pizza",
+                                      "preference", 0.9, [], "c2")
+        # cannot retire another chat's claim
+        self.assertFalse(self.store.retire_claim(theirs["id"], "c1"))
+        self.assertTrue(self.store.retire_claim(mine["id"], "c1"))
+        # already closed → False
+        self.assertFalse(self.store.retire_claim(mine["id"], "c1"))
+
+    def test_active_claims_scoped_to_chat(self):
+        self.store.add_claim("user", "a", "1", "fact", 0.9, [], "c1")
+        self.store.add_claim("user", "b", "2", "fact", 0.9, [], "c2")
+        self.store.add_claim("user", "c", "3", "fact", 0.9, [], None)
+        preds = {c["predicate"] for c in self.store.active_claims(chat_id="c1")}
+        self.assertEqual(preds, {"a", "c"})
+
+    def test_mark_disputed_lowers_confidence_and_renders_tag(self):
+        a = self.store.add_claim("user", "location", "Berlin", "fact", 0.9, [], "c1")
+        b = self.store.add_claim("user", "commute", "Paris office daily",
+                                 "fact", 0.9, [], "c1")
+        self.assertEqual(self.store.mark_disputed([a["id"], b["id"]]), 2)
+        row = next(c for c in self.store.active_claims() if c["id"] == a["id"])
+        self.assertEqual(row["disputed"], 1)
+        self.assertAlmostEqual(row["confidence"], 0.63, places=4)
+        system, _ = composer.build_context(self.store, "c1", "where do I live? location")
+        self.assertIn("DISPUTED", system)
+
+    def test_sweep_marks_conflicts_and_ignores_hallucinated_ids(self):
+        from engram import consolidator
+        a = self.store.add_claim("user", "location", "Berlin", "fact", 0.9, [], "c1")
+        b = self.store.add_claim("user", "commute", "Paris office daily",
+                                 "fact", 0.9, [], "c1")
+        real_extract = consolidator.llm.extract
+        calls = []
+
+        def fake_extract(system, user_text, schema, max_tokens=4000):
+            calls.append(user_text)
+            return {"conflicts": [
+                {"id_a": a["id"], "id_b": b["id"], "reason": "can't commute daily"},
+                {"id_a": 9999, "id_b": b["id"], "reason": "hallucinated id"},
+            ]}
+
+        consolidator.llm.extract = fake_extract
+        try:
+            found = consolidator.sweep_contradictions(self.store)
+        finally:
+            consolidator.llm.extract = real_extract
+        self.assertEqual(len(found), 1)
+        self.assertEqual({found[0]["id_a"], found[0]["id_b"]}, {a["id"], b["id"]})
+        rows = {c["id"]: c for c in self.store.active_claims()}
+        self.assertEqual(rows[a["id"]]["disputed"], 1)
+        self.assertEqual(rows[b["id"]]["disputed"], 1)
+
+    def test_sweep_skips_disputed_and_sparse_subjects(self):
+        from engram import consolidator
+        self.store.add_claim("user", "location", "Berlin", "fact", 0.9, [], "c1")
+        # only one claim for the subject → no LLM call at all
+        real_extract = consolidator.llm.extract
+        consolidator.llm.extract = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("extract must not be called"))
+        try:
+            self.assertEqual(consolidator.sweep_contradictions(self.store), [])
+        finally:
+            consolidator.llm.extract = real_extract
+
+
 if __name__ == "__main__":
     unittest.main()

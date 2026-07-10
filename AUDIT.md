@@ -42,6 +42,15 @@ dari yang paling berdampak:
 Semua tercakup regression test baru (`AntiHallucinationFixTests`, 6 test);
 suite penuh 95 pass.
 
+> **Status pass 2 (follow-up):** P2 (system prompt ditulis ulang ±80% lebih
+> ramping, aturan positif, tanpa mengutip frasa halusinasi), P4 (karantina
+> otomatis via `store.quarantine_poisoned_claims()` + marker terpusat di
+> `engram/hygiene.py` + `reflect()` difilter), roadmap #1 (`/good`, `/bad` →
+> lesson lewat jalur konsolidasi normal), #2 (`/audit`, `/forget`), dan #3
+> (contradiction sweep S4 tahap 2, kolom `disputed`, tag DISPUTED di context)
+> sudah diimplementasikan. Sisa: P1 (pilihan model), P5 (isi endpoint
+> embeddings), roadmap #4 (regression suite) dan #5 (goal tree penuh).
+
 ## Temuan yang BELUM diperbaiki (rekomendasi, urut prioritas)
 
 ### P1 — Ganti / naikkan kelas model chat

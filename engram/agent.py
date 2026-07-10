@@ -573,6 +573,8 @@ class Agent:
                 self._safe_mine()
             if cycles % 8 == 0:  # memory hygiene: decay/prune/backfill embeddings
                 self._safe_maintain()
+            if cycles % 12 == 0:  # implicit-contradiction sweep (S4 stage 2)
+                self._safe_sweep()
 
     def _safe_consolidate(self):
         try:
@@ -589,6 +591,14 @@ class Agent:
                 log.info("memory maintenance %s", stats)
         except Exception:
             log.exception("memory maintenance failed")
+
+    def _safe_sweep(self):
+        try:
+            conflicts = consolidator.sweep_contradictions(self.store)
+            if conflicts:
+                log.info("contradiction sweep flagged %d pair(s)", len(conflicts))
+        except Exception:
+            log.exception("contradiction sweep failed")
 
     def _safe_reflect(self):
         try:
