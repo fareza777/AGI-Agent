@@ -1478,6 +1478,14 @@ class GroundingGuardTests(unittest.TestCase):
         out = _guard_ungrounded_report(reply, ctx, "buat laporan pasar")
         self.assertEqual(out, reply)
 
+    def test_delivered_doc_report_with_no_websearch_is_flagged(self):
+        # re-serving a cached report file (0 web_search) must be flagged even if
+        # the reply is just a chapter list, not stat-heavy
+        ctx = self._ctx(grounding=0, produced=["/ws/Laporan_ChatGPT.docx"])
+        reply = "Selesai. Isi laporan (10 bab): ringkasan eksekutif, benchmark, posisi pasar."
+        out = _guard_ungrounded_report(reply, ctx, "kirim laporan ChatGPT 5.6")
+        self.assertIn("terverifikasi", out)
+
     def test_non_report_not_flagged(self):
         ctx = self._ctx(grounding=0)
         reply = "Oke, sudah aku catat. Harga kopi $5 tadi ya."

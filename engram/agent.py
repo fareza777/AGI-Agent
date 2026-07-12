@@ -427,11 +427,13 @@ def _guard_ungrounded_report(reply: str, ctx: ToolContext, user_text: str = "") 
         return reply
     cites = bool(_CITES_RE.search(reply))
     stat_heavy = len(_STAT_RE.findall(reply)) >= 3
-    # A produced document on a report turn is itself the strong signal, even if
-    # the chat reply is terse — but only warn when there's factual content at
-    # stake (cites/stats), so a purely personal 'laporan aktivitasku' is spared.
-    if not (cites or stat_heavy or (ctx.produced_files and _CITES_RE.search(
-            "\n".join(ctx.tool_output)))):
+    # Delivering a document on a factual-report turn with ZERO web calls is
+    # itself the signal — this also catches RE-SENDING a previously fabricated
+    # file (the '22:48 re-serve' case), where the chat reply is just a chapter
+    # list, not stat-heavy. A purely personal report ('laporan aktivitasku')
+    # gets a mild, honest "not web-verified" note, which is acceptable.
+    delivered_doc = bool(ctx.produced_files)
+    if not (cites or stat_heavy or delivered_doc):
         return reply
     return (
         f"{reply}\n\n"
