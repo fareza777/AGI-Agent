@@ -336,6 +336,21 @@ def tool_specs() -> list:
                         "description": "e.g. 1024x1024 (default), 1024x1536, 1536x1024"}},
               ["prompt"]),
     ]
+    if config.ENABLE_OFFICECLI:
+        specs.append(_spec(
+            "officecli",
+            "Build or inspect a high-quality Word/PowerPoint/Excel file with the "
+            "officecli tool — richer than create_document (precise styles, "
+            "headings, tables, charts, slide layouts). `command` is the officecli "
+            "subcommand WITHOUT the leading 'officecli', e.g. "
+            "'create report.docx', or 'add report.docx /body --type paragraph "
+            "--prop text=\"Executive Summary\" --prop style=Heading1'. Files land "
+            "in the workspace; deliver the finished file with send_file. When "
+            "unsure of a property name run 'help docx paragraph' first. Load the "
+            "officecli_report skill for the full workflow.",
+            {"command": {"type": "string",
+                         "description": "officecli subcommand, e.g. create report.docx"}},
+            ["command"]))
     if config.ENABLE_CODE_TOOL or config.ENABLE_CODE_TOOL_OWNER:
         specs.append(_spec(
             "run_python",
@@ -370,6 +385,8 @@ _GATED = {
 
 def _gate_blocked(name: str, ctx: "ToolContext"):
     """Return an ERROR string if a gated tool may NOT run for this chat, else None."""
+    if name == "officecli":
+        return None if config.ENABLE_OFFICECLI else f"ERROR: unknown tool '{name}'"
     gate = _GATED.get(name)
     if gate is None:
         return None
@@ -395,6 +412,7 @@ _ICONS = {
     "read_file": "📄", "write_file": "✍️", "edit_file": "✏️", "delete_file": "🗑",
     "search_files": "🔍", "create_document": "📝", "send_file": "📤",
     "git": "🔧", "run_python": "🐍", "run_shell": "💻", "view_image": "👁",
+    "officecli": "📝",
     "send_email": "✉️", "generate_image": "🎨",
 }
 # Most-informative arg to show, in priority order.
@@ -871,6 +889,10 @@ def _run_shell(args, ctx):
     return desktop.run_shell(args["command"])
 
 
+def _officecli(args, ctx):
+    return desktop.officecli(args["command"])
+
+
 _HANDLERS = {
     "recall": _recall,
     "remember": _remember,
@@ -903,4 +925,5 @@ _HANDLERS = {
     "generate_image": _generate_image,
     "run_python": _run_python,
     "run_shell": _run_shell,
+    "officecli": _officecli,
 }

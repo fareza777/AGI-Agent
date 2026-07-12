@@ -22,6 +22,8 @@ import csv
 import io
 import os
 import re
+import shlex
+import shutil
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -1454,6 +1456,66 @@ def _trim_git(parts: list) -> list:
     if parts and parts[0] == "log" and not any(p.startswith("-n") for p in parts):
         return parts + ["-n", "20", "--oneline"]
     return parts
+
+
+# ---------------- officecli (Office document CLI) ----------------
+def _officecli_bin() -> str | None:
+    """Locate the officecli binary: explicit config, PATH, or a common install
+    dir. Returns None if it isn't installed."""
+    if config.OFFICECLI_BIN:
+        return config.OFFICECLI_BIN if Path(config.OFFICECLI_BIN).is_file() else None
+    found = shutil.which("officecli") or shutil.which("officecli.exe")
+    if found:
+        return found
+    for cand in (
+        Path.home() / ".officecli" / "bin" / "officecli.exe",
+        Path.home() / ".officecli" / "bin" / "officecli",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "officecli" / "officecli.exe",
+    ):
+        if cand.is_file():
+            return str(cand)
+    return None
+
+
+def officecli(command: str) -> str:
+    """Run one `officecli` subcommand inside the workspace and return its output.
+
+    `command` is the part AFTER the binary name, e.g.
+    `create report.docx` or `add report.docx /body --type paragraph --prop text="Hi"`.
+    It is tokenized with shlex and executed WITHOUT a shell, so shell
+    metacharacters (; | && $() ) carry no power — the only program ever run is
+    officecli itself, scoped to the workspace."""
+    ensure_workspace()
+    binary = _officecli_bin()
+    if not binary:
+        return ("ERROR: officecli belum terpasang di mesin ini. Pasang dulu "
+                "(PowerShell): irm https://d.officecli.ai/install.ps1 | iex — "
+                "lalu buka terminal baru dan cek `officecli --version`.")
+    try:
+        parts = shlex.split(command, posix=True)
+    except ValueError as exc:
+        return f"ERROR: argumen officecli tidak valid ({exc})."
+    if not parts:
+        return "ERROR: perintah officecli kosong."
+    # Defense in depth: the model supplies args only — never the program.
+    if parts[0] in ("officecli", "officecli.exe"):
+        parts = parts[1:]
+    try:
+        proc = subprocess.run(
+            [binary, *parts],
+            capture_output=True,
+            text=True,
+            timeout=config.OFFICECLI_TIMEOUT_SEC,
+            cwd=str(config.WORKSPACE_DIR),
+        )
+    except subprocess.TimeoutExpired:
+        return f"ERROR: officecli timeout setelah {config.OFFICECLI_TIMEOUT_SEC}s."
+    out = (proc.stdout or "")[-4000:]
+    err = (proc.stderr or "")[-2000:]
+    tail = f"exit={proc.returncode}\nstdout:\n{out}"
+    if err.strip():
+        tail += f"\nstderr:\n{err}"
+    return tail
 
 
 # ---------------- shell (opt-in) ----------------

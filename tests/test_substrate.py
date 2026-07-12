@@ -1360,5 +1360,80 @@ class RetrievalAndScopeTests(unittest.TestCase):
         self.store.checkpoint_wal()
 
 
+class OfficecliToolTests(unittest.TestCase):
+    """officecli tool: graceful when the binary is absent, no shell injection,
+    honours the enable flag."""
+
+    def setUp(self):
+        from engram import desktop
+        self.desktop = desktop
+
+    def test_missing_binary_reports_install_hint(self):
+        from unittest import mock
+        with mock.patch.object(self.desktop, "_officecli_bin", return_value=None):
+            out = self.desktop.officecli("create report.docx")
+        self.assertTrue(out.startswith("ERROR"))
+        self.assertIn("install", out.lower())
+
+    def test_runs_binary_without_shell_and_tokenizes(self):
+        from unittest import mock
+        captured = {}
+
+        class FakeProc:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["shell"] = kwargs.get("shell", False)
+            return FakeProc()
+
+        with mock.patch.object(self.desktop, "_officecli_bin", return_value="/usr/bin/officecli"), \
+             mock.patch.object(self.desktop.subprocess, "run", fake_run):
+            # a shell metacharacter must be an inert literal token, never executed
+            self.desktop.officecli('create "a b.docx" ; rm -rf /')
+        self.assertEqual(captured["argv"][0], "/usr/bin/officecli")
+        self.assertFalse(captured["shell"])           # never shell=True
+        self.assertIn("a b.docx", captured["argv"])   # quoted arg kept intact
+        self.assertIn(";", captured["argv"])          # ';' is a literal token, not a separator
+
+    def test_strips_leading_program_name(self):
+        from unittest import mock
+
+        class FakeProc:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return FakeProc()
+
+        with mock.patch.object(self.desktop, "_officecli_bin", return_value="ocli"), \
+             mock.patch.object(self.desktop.subprocess, "run", fake_run):
+            self.desktop.officecli("officecli create x.docx")
+        self.assertEqual(captured["argv"], ["ocli", "create", "x.docx"])
+
+    def test_tool_blocked_when_disabled(self):
+        import engram.config as cfg
+        from engram import tools
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        store = Store(path)
+        ctx = tools.ToolContext(store, "c1")
+        old = cfg.ENABLE_OFFICECLI
+        cfg.ENABLE_OFFICECLI = False
+        try:
+            out = tools.run_tool("officecli", {"command": "create x.docx"}, ctx)
+            self.assertIn("unknown tool", out)
+        finally:
+            cfg.ENABLE_OFFICECLI = old
+            store.close()
+            os.unlink(path)
+
+
 if __name__ == "__main__":
     unittest.main()

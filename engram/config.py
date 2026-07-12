@@ -109,6 +109,19 @@ ENABLE_SHELL_TOOL_OWNER = os.environ.get("ENGRAM_ENABLE_SHELL_TOOL_OWNER", "0") 
 GIT_READ_ONLY = os.environ.get("ENGRAM_GIT_READ_ONLY", "1") == "1"
 MAX_FILE_READ_BYTES = 200_000
 
+# officecli: a single-binary CLI (https://officecli.ai) for building high-quality
+# .docx/.xlsx/.pptx with fine-grained control (styles, charts, tables, slides).
+# The `officecli` tool runs ONLY that binary (never a free shell) inside the
+# workspace, so it's on by default — but returns a graceful ERROR asking the
+# user to install if the binary isn't found. Set 0 to disable the tool entirely.
+ENABLE_OFFICECLI = os.environ.get("ENGRAM_ENABLE_OFFICECLI", "1") == "1"
+# Path to the officecli binary; empty = auto-discover on PATH / common install
+# locations. Override if you installed it somewhere non-standard.
+OFFICECLI_BIN = os.environ.get("ENGRAM_OFFICECLI_BIN", "")
+# Per-command timeout. Generous because the first call boots a resident process
+# and rendering commands (pdf/screenshot) drive a headless browser.
+OFFICECLI_TIMEOUT_SEC = int(os.environ.get("ENGRAM_OFFICECLI_TIMEOUT_SEC", "90"))
+
 # Branding: a logo placed on the cover of generated docx/pptx. Defaults to the
 # bundled Engram avatar when present; override with ENGRAM_BRAND_LOGO=/path.
 _DEFAULT_LOGO = PROJECT_ROOT / "engram-agent-avatar.png"
