@@ -116,6 +116,13 @@ class Store:
                 pass
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # Auto-checkpoint the WAL every ~1000 pages so it can't balloon past the
+        # main DB (observed 4 MB WAL vs 1.7 MB DB with checkpointing off).
+        if self._db_path != ":memory:":
+            try:
+                self._conn.execute("PRAGMA wal_autocheckpoint=1000")
+            except sqlite3.OperationalError:
+                pass
         self._conn.executescript(_SCHEMA)
         self._migrate()
         self._conn.commit()
@@ -131,6 +138,16 @@ class Store:
             # the reasoner knows the ground is uncertain.
             self._conn.execute(
                 "ALTER TABLE claims ADD COLUMN disputed INTEGER NOT NULL DEFAULT 0")
+        # S7 goal tree: subgoals (parent_id), belief linkage (source_claim_ids),
+        # and a review flag raised when a linked belief is superseded.
+        gcols = {r["name"] for r in self._conn.execute("PRAGMA table_info(goals)")}
+        if "parent_id" not in gcols:
+            self._conn.execute("ALTER TABLE goals ADD COLUMN parent_id INTEGER")
+        if "source_claim_ids" not in gcols:
+            self._conn.execute("ALTER TABLE goals ADD COLUMN source_claim_ids TEXT")
+        if "needs_review" not in gcols:
+            self._conn.execute(
+                "ALTER TABLE goals ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0")
 
     # ---------------- S1: episodic event log ----------------
 
@@ -248,6 +265,10 @@ class Store:
                 superseded = existing
 
             self._conn.commit()
+        # A belief this goal rests on just changed — flag dependent plans for
+        # review (S7). Done outside the lock; it takes its own.
+        if superseded is not None:
+            self.flag_goals_for_claim(existing["id"], chat_id)
         # Embed outside the lock (network call); store best-effort. Off unless
         # an embeddings endpoint is configured, so this is a no-op by default.
         self._maybe_store_embedding(new_id, f"{subject} {predicate} {value}")
@@ -381,12 +402,19 @@ class Store:
 
     # ---------------- S7: goals ----------------
 
-    def add_goal(self, chat_id: str, title: str) -> int:
+    def add_goal(self, chat_id: str, title: str, parent_id: int = None,
+                 source_claim_ids: list = None) -> int:
+        """Add a goal, optionally as a subgoal (parent_id) and/or linked to the
+        beliefs it rests on (source_claim_ids). If a linked belief is later
+        superseded, the goal is auto-flagged for review — the S7 promise that
+        plans get re-examined when the facts under them change."""
         ts = now_iso()
+        src = json.dumps(source_claim_ids) if source_claim_ids else None
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO goals (chat_id, title, created_at, updated_at) VALUES (?,?,?,?)",
-                (chat_id, title, ts, ts),
+                "INSERT INTO goals (chat_id, title, parent_id, source_claim_ids, "
+                "created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                (chat_id, title, parent_id, src, ts, ts),
             )
             self._conn.commit()
             return cur.lastrowid
@@ -400,12 +428,64 @@ class Store:
             self._conn.commit()
             return cur.rowcount > 0
 
+    def clear_goal_review(self, goal_id: int) -> bool:
+        """Acknowledge a plan review — lower the flag once the goal has been
+        reconsidered against the changed belief."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE goals SET needs_review=0, updated_at=? WHERE id=?",
+                (now_iso(), goal_id),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
     def goals(self, chat_id: str, status: str = "active") -> list:
         with self._lock:
             return self._conn.execute(
-                "SELECT * FROM goals WHERE chat_id=? AND status=? ORDER BY id ASC",
+                "SELECT * FROM goals WHERE chat_id=? AND status=? "
+                "ORDER BY COALESCE(parent_id, id), id ASC",
                 (chat_id, status),
             ).fetchall()
+
+    def flag_goals_for_claim(self, claim_id: int, chat_id: str = None) -> int:
+        """Raise the review flag on every active goal whose source_claim_ids
+        include `claim_id` — called when that claim is superseded. Returns the
+        number of goals flagged."""
+        scope, params = "", []
+        if chat_id is not None:
+            scope = "AND chat_id = ? "
+            params.append(chat_id)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, source_claim_ids FROM goals WHERE status='active' "
+                f"AND source_claim_ids IS NOT NULL {scope}",
+                tuple(params),
+            ).fetchall()
+            flag = []
+            for r in rows:
+                try:
+                    if claim_id in json.loads(r["source_claim_ids"]):
+                        flag.append(r["id"])
+                except (ValueError, TypeError):
+                    continue
+            if flag:
+                ts = now_iso()
+                self._conn.executemany(
+                    "UPDATE goals SET needs_review=1, updated_at=? WHERE id=?",
+                    [(ts, i) for i in flag],
+                )
+                self._conn.commit()
+        return len(flag)
+
+    def active_chat_ids(self) -> list:
+        """Distinct chat_ids that hold at least one active claim — used to run
+        reflection PER chat so one user's beliefs never seed another's insights."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT chat_id FROM claims "
+                "WHERE valid_to IS NULL AND chat_id IS NOT NULL"
+            ).fetchall()
+        return [r["chat_id"] for r in rows]
 
     # ---------------- memory maintenance (sleep-cycle hygiene) ----------------
 
@@ -462,8 +542,20 @@ class Store:
             retired = cur.rowcount
             self._conn.commit()
         backfilled = self._backfill_embeddings(backfill_limit)
+        self.checkpoint_wal()
         return {"quarantined": quarantined, "decayed": decayed,
                 "retired": retired, "backfilled": backfilled}
+
+    def checkpoint_wal(self) -> None:
+        """Fold the write-ahead log back into the main DB and truncate it, so a
+        long-running bot's WAL file can't grow without bound. Best-effort."""
+        if self._db_path == ":memory:":
+            return
+        with self._lock:
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.OperationalError:
+                pass
 
     def _backfill_embeddings(self, limit: int) -> int:
         from . import embeddings
@@ -475,20 +567,25 @@ class Store:
                 "SELECT id, subject, predicate, value FROM claims "
                 "WHERE valid_to IS NULL AND embedding IS NULL LIMIT ?", (limit,),
             ).fetchall()
-        done = 0
-        for r in rows:
-            try:
-                vec = embeddings.embed(f"{r['subject']} {r['predicate']} {r['value']}")
-                if not vec:
-                    continue
-                with self._lock:
-                    self._conn.execute("UPDATE claims SET embedding=? WHERE id=?",
-                                       (embeddings.pack(vec), r["id"]))
-                    self._conn.commit()
-                done += 1
-            except Exception:
-                break  # endpoint hiccup — try again next maintenance pass
-        return done
+        if not rows:
+            return 0
+        # One batched embeddings call instead of one HTTP round trip per claim.
+        texts = [f"{r['subject']} {r['predicate']} {r['value']}" for r in rows]
+        try:
+            vecs = embeddings.embed_many(texts)
+        except Exception:
+            return 0  # endpoint hiccup — try again next maintenance pass
+        if not vecs:
+            return 0
+        updates = [(embeddings.pack(v), r["id"])
+                   for r, v in zip(rows, vecs) if v]
+        if not updates:
+            return 0
+        with self._lock:
+            self._conn.executemany(
+                "UPDATE claims SET embedding=? WHERE id=?", updates)
+            self._conn.commit()
+        return len(updates)
 
     # ---------------- reminders (scheduled messages) ----------------
 
@@ -635,9 +732,30 @@ def canonical_predicate(predicate: str) -> str:
     return _PREDICATE_ALIASES.get(p, p)
 
 
+# Function words that carry no retrieval signal. Kept out of the FTS OR-query
+# so "apa makanan favorit saya" doesn't match every belief containing "saya" —
+# BM25 then ranks on the content terms that actually matter. Bilingual because
+# the user writes Indonesian while beliefs are often stored in English.
+_STOPWORDS = frozenset((
+    "yang", "dan", "di", "ke", "dari", "untuk", "dengan", "pada", "ini", "itu",
+    "atau", "juga", "saya", "aku", "kamu", "kita", "adalah", "apa", "apakah",
+    "ada", "tidak", "nggak", "gak", "mau", "bisa", "sudah", "belum", "akan",
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "is",
+    "are", "was", "were", "my", "your", "our", "it", "this", "that", "do", "does",
+))
+
+
 def _fts_query(text: str) -> str:
-    """Convert free text to a safe FTS5 OR-query of quoted terms."""
-    terms = [t for t in "".join(c if c.isalnum() else " " for c in text).split() if len(t) > 1]
+    """Convert free text to a safe FTS5 OR-query of quoted content terms.
+
+    Stopwords are dropped so common function words don't match every row; if the
+    query is *all* stopwords we fall back to the raw terms rather than returning
+    an empty match (better a noisy hit than no recall at all)."""
+    raw = [t for t in "".join(c if c.isalnum() else " " for c in text).split()
+           if len(t) > 1]
+    terms = [t for t in raw if t.lower() not in _STOPWORDS]
+    if not terms:
+        terms = raw
     return " OR ".join(f'"{t}"' for t in terms[:12])
 
 

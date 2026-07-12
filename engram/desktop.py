@@ -153,15 +153,20 @@ def _extract_document_text(target: Path, ext: str):
         if ext == ".xlsx":
             from openpyxl import load_workbook
 
+            # read_only mode holds the file open until close(); without it the
+            # handle leaks and Windows blocks any later move/delete of the file.
             wb = load_workbook(str(target), read_only=True, data_only=True)
-            out = []
-            for ws in wb.worksheets:
-                out.append(f"# Sheet: {ws.title}")
-                for row in ws.iter_rows(values_only=True):
-                    vals = [("" if v is None else str(v)) for v in row]
-                    if any(vals):
-                        out.append(" | ".join(vals))
-            return "\n".join(out) or "(workbook kosong)"
+            try:
+                out = []
+                for ws in wb.worksheets:
+                    out.append(f"# Sheet: {ws.title}")
+                    for row in ws.iter_rows(values_only=True):
+                        vals = [("" if v is None else str(v)) for v in row]
+                        if any(vals):
+                            out.append(" | ".join(vals))
+                return "\n".join(out) or "(workbook kosong)"
+            finally:
+                wb.close()
         if ext == ".pptx":
             from pptx import Presentation
 

@@ -602,9 +602,13 @@ class Agent:
 
     def _safe_reflect(self):
         try:
-            insights = consolidator.reflect(self.store)
-            if insights:
-                log.info("generated %d insight(s)", len(insights))
+            # Reflect PER chat so insights stay scoped to one user's beliefs and
+            # are stored against their chat_id — never mixed across tenants.
+            total = 0
+            for chat_id in self.store.active_chat_ids():
+                total += len(consolidator.reflect(self.store, chat_id=chat_id))
+            if total:
+                log.info("generated %d insight(s)", total)
         except Exception:
             log.exception("reflection failed")
 

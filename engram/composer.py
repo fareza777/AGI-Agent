@@ -202,10 +202,7 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
             memory.append("\n".join(lines))
     goals = store.goals(chat_id, "active")
     if goals:
-        lines = ["## ACTIVE GOALS"]
-        for g in goals:
-            lines.append(f"- #{g['id']} {g['title']} (since {g['created_at'][:10]})")
-        memory.append("\n".join(lines))
+        memory.append(_render_goal_tree(goals))
     # S10 learning loop: lessons distilled from past mistakes are always in
     # view (not just when keywords match), so the same mistake isn't repeated.
     lesson_rows = _filter_stale_lessons(
@@ -229,6 +226,45 @@ def build_context(store: Store, chat_id: str, user_text: str) -> tuple:
         messages.pop()
     messages.append({"role": "user", "content": user_text})
     return system, messages
+
+
+def _render_goal_tree(goals: list) -> str:
+    """Render active goals as a parent/child tree (S7). A goal whose underlying
+    belief was superseded carries a ⚠ REVIEW marker so the agent re-examines the
+    plan instead of pursuing it on stale assumptions."""
+    def _key(g):
+        try:
+            return g["needs_review"]
+        except (KeyError, IndexError):
+            return 0
+
+    children = {}
+    roots = []
+    ids = {g["id"] for g in goals}
+    for g in goals:
+        parent = None
+        try:
+            parent = g["parent_id"]
+        except (KeyError, IndexError):
+            parent = None
+        if parent and parent in ids:
+            children.setdefault(parent, []).append(g)
+        else:
+            roots.append(g)
+
+    lines = ["## ACTIVE GOALS"]
+
+    def _emit(g, depth):
+        flag = " ⚠ REVIEW (a belief behind this goal changed)" if _key(g) else ""
+        indent = "  " * depth
+        lines.append(f"{indent}- #{g['id']} {g['title']} "
+                     f"(since {g['created_at'][:10]}){flag}")
+        for c in children.get(g["id"], []):
+            _emit(c, depth + 1)
+
+    for g in roots:
+        _emit(g, 0)
+    return "\n".join(lines)
 
 
 def _conversation_tail(store: Store, chat_id: str) -> list:

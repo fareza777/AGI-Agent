@@ -139,11 +139,18 @@ def tool_specs() -> list:
               {"subject": {"type": "string"}, "predicate": {"type": "string"}},
               ["subject", "predicate"]),
         _spec("manage_goal",
-              "Manage the user's persistent goals. action=add needs title; "
-              "action=done needs goal_id; action=list needs nothing.",
-              {"action": {"type": "string", "enum": ["add", "done", "list"]},
+              "Manage the user's persistent goal tree. action=add needs title "
+              "(optional parent_id to make it a subgoal, and source_claim_ids "
+              "listing the belief ids the goal rests on — if one of those beliefs "
+              "later changes, the goal is auto-flagged for review). action=done "
+              "and action=review (acknowledge a review flag) need goal_id; "
+              "action=list needs nothing.",
+              {"action": {"type": "string",
+                          "enum": ["add", "done", "review", "list"]},
                "title": {"type": "string"},
-               "goal_id": {"type": "integer"}},
+               "goal_id": {"type": "integer"},
+               "parent_id": {"type": "integer"},
+               "source_claim_ids": {"type": "array", "items": {"type": "integer"}}},
               ["action"]),
         _spec("schedule_reminder",
               "Schedule a message to be sent to the user at a future time. "
@@ -497,15 +504,29 @@ def _belief_history(args, ctx):
 def _manage_goal(args, ctx):
     action = args["action"]
     if action == "add":
-        gid = ctx.store.add_goal(ctx.chat_id, args["title"])
+        parent_id = args.get("parent_id")
+        src = args.get("source_claim_ids")
+        if isinstance(src, int):
+            src = [src]
+        gid = ctx.store.add_goal(ctx.chat_id, args["title"],
+                                 parent_id=int(parent_id) if parent_id else None,
+                                 source_claim_ids=src or None)
         return f"Goal #{gid} added."
     if action == "done":
         ok = ctx.store.set_goal_status(int(args["goal_id"]), "done")
         return "Goal marked done." if ok else "ERROR: no such goal."
+    if action == "review":
+        ok = ctx.store.clear_goal_review(int(args["goal_id"]))
+        return "Goal review acknowledged." if ok else "ERROR: no such goal."
     goals = ctx.store.goals(ctx.chat_id, "active")
     if not goals:
         return "No active goals."
-    return "\n".join(f"#{g['id']} {g['title']} (since {g['created_at'][:10]})" for g in goals)
+    out = []
+    for g in goals:
+        flag = " [REVIEW: a belief behind this goal changed]" if g["needs_review"] else ""
+        parent = f" (subgoal of #{g['parent_id']})" if g["parent_id"] else ""
+        out.append(f"#{g['id']} {g['title']} (since {g['created_at'][:10]}){parent}{flag}")
+    return "\n".join(out)
 
 
 def _schedule_reminder(args, ctx):

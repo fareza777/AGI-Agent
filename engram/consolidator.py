@@ -265,7 +265,8 @@ def reflect(store: Store, chat_id: str = None) -> list:
     """One reflection pass. Returns the list of new insight claims (as dicts)."""
     # Poisoned rows are excluded so reflection can't launder a bad belief into
     # a fresh "insight" (they're also quarantined by memory maintenance).
-    claims = [c for c in store.active_claims(limit=120)
+    # Scoped to this chat so one user's beliefs never seed another's insights.
+    claims = [c for c in store.active_claims(limit=120, chat_id=chat_id)
               if not hygiene.is_poisoned(c["predicate"], c["value"])]
     if len(claims) < 5:
         return []

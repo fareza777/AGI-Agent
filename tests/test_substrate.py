@@ -1276,5 +1276,89 @@ class BeliefHygieneTests(unittest.TestCase):
             consolidator.llm.extract = real_extract
 
 
+class GoalTreeTests(unittest.TestCase):
+    """S7: subgoals, belief linkage, and plan review when facts change."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.path)
+
+    def test_subgoal_nesting_in_tree(self):
+        root = self.store.add_goal("c1", "Ship v2")
+        child = self.store.add_goal("c1", "Write the API layer", parent_id=root)
+        goals = self.store.goals("c1")
+        self.assertEqual(len(goals), 2)
+        rendered = composer._render_goal_tree(goals)
+        self.assertIn("Ship v2", rendered)
+        # child is indented under the parent
+        self.assertIn("  - #", rendered)
+        childrow = next(g for g in goals if g["id"] == child)
+        self.assertEqual(childrow["parent_id"], root)
+
+    def test_superseded_belief_flags_dependent_goal(self):
+        claim = self.store.add_claim("user", "target_market", "SMB", "fact",
+                                     0.9, [1], "c1")
+        gid = self.store.add_goal("c1", "Build SMB onboarding",
+                                  source_claim_ids=[claim["id"]])
+        # the belief the goal rests on changes → goal flagged for review
+        self.store.add_claim("user", "target_market", "Enterprise", "fact",
+                             0.95, [2], "c1")
+        g = next(g for g in self.store.goals("c1") if g["id"] == gid)
+        self.assertEqual(g["needs_review"], 1)
+        rendered = composer._render_goal_tree(self.store.goals("c1"))
+        self.assertIn("REVIEW", rendered)
+        # acknowledging clears the flag
+        self.assertTrue(self.store.clear_goal_review(gid))
+        g2 = next(g for g in self.store.goals("c1") if g["id"] == gid)
+        self.assertEqual(g2["needs_review"], 0)
+
+    def test_unlinked_goal_not_flagged(self):
+        self.store.add_claim("user", "target_market", "SMB", "fact", 0.9, [1], "c1")
+        gid = self.store.add_goal("c1", "Unrelated goal")
+        self.store.add_claim("user", "target_market", "Enterprise", "fact",
+                             0.95, [2], "c1")
+        g = next(g for g in self.store.goals("c1") if g["id"] == gid)
+        self.assertEqual(g["needs_review"], 0)
+
+
+class RetrievalAndScopeTests(unittest.TestCase):
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.path)
+
+    def test_fts_query_drops_stopwords(self):
+        from engram.store import _fts_query
+        q = _fts_query("apa makanan favorit saya")
+        self.assertIn("makanan", q)
+        self.assertIn("favorit", q)
+        self.assertNotIn('"apa"', q)
+        self.assertNotIn('"saya"', q)
+
+    def test_fts_query_all_stopwords_falls_back(self):
+        from engram.store import _fts_query
+        # never return an empty match (zero recall) just because it's all stopwords
+        self.assertNotEqual(_fts_query("apa yang saya"), "")
+
+    def test_active_chat_ids_distinct(self):
+        self.store.add_claim("user", "location", "Jakarta", "fact", 0.9, [1], "c1")
+        self.store.add_claim("user", "location", "Bandung", "fact", 0.9, [2], "c2")
+        self.store.add_claim("user", "global_fact", "x", "fact", 0.9, [3], None)
+        self.assertEqual(set(self.store.active_chat_ids()), {"c1", "c2"})
+
+    def test_checkpoint_wal_noop_safe(self):
+        # must not raise even when there's nothing to checkpoint
+        self.store.checkpoint_wal()
+
+
 if __name__ == "__main__":
     unittest.main()
