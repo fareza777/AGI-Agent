@@ -1,12 +1,11 @@
-# Safe Engram autostart after Windows logon. Runs once, no loop.
+# Engram watchdog: start only when process is down. No 60s logon delay.
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path $PSScriptRoot -Parent
 $StartScript = Join-Path $PSScriptRoot "start-engram-windows.ps1"
-$LogFile = Join-Path $Root "autostart.log"
-$StartupDelaySec = 60
+$LogFile = Join-Path $Root "watchdog.log"
 
-function Write-AutoLog {
+function Write-WatchLog {
     param([string]$Message)
     $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
     Add-Content -Path $LogFile -Value $line -Encoding UTF8
@@ -34,30 +33,21 @@ function Test-EngramRunning {
 }
 
 try {
-    if (-not (Test-Path $StartScript)) {
-        Write-AutoLog "ERROR: start script missing: $StartScript"
-        exit 1
-    }
-
-    Write-AutoLog "Waiting ${StartupDelaySec}s after logon"
-    Start-Sleep -Seconds $StartupDelaySec
-
     if (Test-EngramRunning) {
-        Write-AutoLog "SKIP: Engram already running"
         exit 0
     }
 
-    Write-AutoLog "Invoking safe start script"
-    & powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $StartScript | Out-File -FilePath $LogFile -Append -Encoding UTF8
+    Write-WatchLog "Engram down - invoking safe start"
+    & powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $StartScript | Out-Null
 
     if (Test-EngramRunning) {
-        Write-AutoLog "SUCCESS: Engram Telegram bot is running"
+        Write-WatchLog "SUCCESS: Engram recovered"
         exit 0
     }
 
-    Write-AutoLog "WARN: Start finished but process check failed; see engram_err.log"
+    Write-WatchLog "WARN: Start finished but process check failed"
     exit 1
 } catch {
-    Write-AutoLog "ERROR: $($_.Exception.Message)"
+    Write-WatchLog "ERROR: $($_.Exception.Message)"
     exit 1
 }
