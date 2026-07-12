@@ -125,6 +125,12 @@ class Store:
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(claims)")}
         if "embedding" not in cols:
             self._conn.execute("ALTER TABLE claims ADD COLUMN embedding BLOB")
+        if "disputed" not in cols:
+            # S4 stage 2: set by the contradiction sweep when two active
+            # claims can't both be true; rendered as DISPUTED at retrieval so
+            # the reasoner knows the ground is uncertain.
+            self._conn.execute(
+                "ALTER TABLE claims ADD COLUMN disputed INTEGER NOT NULL DEFAULT 0")
 
     # ---------------- S1: episodic event log ----------------
 
@@ -320,12 +326,51 @@ class Store:
         scored.sort(key=lambda t: t[0], reverse=True)
         return [r for _, r in scored[:limit]]
 
-    def active_claims(self, limit: int = 200) -> list:
+    def active_claims(self, limit: int = 200, chat_id: str = None) -> list:
+        scope, params = "", []
+        if chat_id is not None:
+            scope = "AND (chat_id = ? OR chat_id IS NULL) "
+            params.append(chat_id)
+        params.append(limit)
         with self._lock:
             return self._conn.execute(
-                "SELECT * FROM claims WHERE valid_to IS NULL ORDER BY id DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM claims WHERE valid_to IS NULL "
+                f"{scope}ORDER BY id DESC LIMIT ?",
+                tuple(params),
             ).fetchall()
+
+    def mark_disputed(self, claim_ids: list, factor: float = 0.7) -> int:
+        """Flag claims as disputed (S4): sources disagree and neither side is
+        clearly newer/truer. Confidence is scaled down so disputed beliefs
+        lose retrieval priority; the DISPUTED tag is rendered into context.
+        Returns how many rows were updated."""
+        if not claim_ids:
+            return 0
+        with self._lock:
+            cur = self._conn.executemany(
+                "UPDATE claims SET disputed=1, confidence=ROUND(confidence*?, 4) "
+                "WHERE id=? AND valid_to IS NULL",
+                [(factor, i) for i in claim_ids],
+            )
+            self._conn.commit()
+            return cur.rowcount
+
+    def retire_claim(self, claim_id: int, chat_id: str = None) -> bool:
+        """Close one active claim (user said it's wrong — /forget). The row
+        stays for audit; it just stops being believed. When chat_id is given,
+        only that chat's (or global) claims can be retired — one user cannot
+        erase another's memory."""
+        scope, params = "", [now_iso(), claim_id]
+        if chat_id is not None:
+            scope = "AND (chat_id = ? OR chat_id IS NULL)"
+            params.append(chat_id)
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE claims SET valid_to=? WHERE id=? AND valid_to IS NULL {scope}",
+                tuple(params),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
 
     def claim_history(self, subject: str, predicate: str) -> list:
         with self._lock:
@@ -364,14 +409,39 @@ class Store:
 
     # ---------------- memory maintenance (sleep-cycle hygiene) ----------------
 
+    def quarantine_poisoned_claims(self) -> int:
+        """Close (valid_to = now) every ACTIVE claim matching the poison
+        markers in engram.hygiene. Until now those rows were only filtered at
+        retrieval time — still active in the DB and still reachable through
+        other paths (reflection, /memory). Nothing is deleted: the rows stay
+        for audit, they just stop being believed. Returns how many closed."""
+        from . import hygiene
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, predicate, value FROM claims WHERE valid_to IS NULL"
+            ).fetchall()
+            bad = [r["id"] for r in rows
+                   if hygiene.is_poisoned(r["predicate"], r["value"])]
+            if bad:
+                ts = now_iso()
+                self._conn.executemany(
+                    "UPDATE claims SET valid_to=? WHERE id=?",
+                    [(ts, i) for i in bad],
+                )
+                self._conn.commit()
+        return len(bad)
+
     def maintain_memory(self, decay_days: int = 30, decay_factor: float = 0.9,
                         floor: float = 0.15, backfill_limit: int = 32) -> dict:
         """Keep the belief store healthy:
+          - quarantine poisoned claims (see quarantine_poisoned_claims),
           - decay 'insight' claims (hypotheses) not refreshed in `decay_days`,
           - retire any active claim whose confidence fell below `floor`,
           - backfill embeddings for claims that lack them (when enabled).
         Facts/preferences are NOT decayed by age — a fact stays true until
         contradicted. Returns counts for logging."""
+        quarantined = self.quarantine_poisoned_claims()
         cutoff = (datetime.now(timezone.utc)
                   - timedelta(days=decay_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
         decayed = retired = 0
@@ -392,7 +462,8 @@ class Store:
             retired = cur.rowcount
             self._conn.commit()
         backfilled = self._backfill_embeddings(backfill_limit)
-        return {"decayed": decayed, "retired": retired, "backfilled": backfilled}
+        return {"quarantined": quarantined, "decayed": decayed,
+                "retired": retired, "backfilled": backfilled}
 
     def _backfill_embeddings(self, limit: int) -> int:
         from . import embeddings
@@ -504,12 +575,19 @@ class Store:
 
     # ---------------- lessons (S10 learning loop) ----------------
 
-    def recent_lessons(self, limit: int = 5) -> list:
+    def recent_lessons(self, limit: int = 5, chat_id: str = None) -> list:
+        # Scope to this chat (+ global NULL-chat rows) like the other memory
+        # queries, so one chat's lessons never steer another chat's behaviour.
+        scope, params = "", []
+        if chat_id is not None:
+            scope = "AND (chat_id = ? OR chat_id IS NULL) "
+            params.append(chat_id)
+        params.append(limit)
         with self._lock:
             return self._conn.execute(
                 "SELECT * FROM claims WHERE kind='lesson' AND valid_to IS NULL "
-                "ORDER BY id DESC LIMIT ?",
-                (limit,),
+                f"{scope}ORDER BY id DESC LIMIT ?",
+                tuple(params),
             ).fetchall()
 
     # ---------------- meta (e.g. Telegram update offset) ----------------

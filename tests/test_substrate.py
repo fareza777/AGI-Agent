@@ -1103,5 +1103,178 @@ class IntegrationsAndChartsTests(unittest.TestCase):
                           {"type": "bar", "value_col": 0}, "/tmp/none.png"))
 
 
+class AntiHallucinationFixTests(unittest.TestCase):
+    """Regression tests for the hallucination-engine audit fixes."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.path)
+
+    def test_unsourced_link_guard_handles_www_prefix(self):
+        # str.lstrip("www.") mangled domains starting with w/dot; a link whose
+        # domain DID come back from a tool must not be flagged as unverified.
+        from engram.agent import _guard_unsourced_links
+        ctx = ToolContext(self.store, "c1")
+        ctx.tool_output.append("result from https://weather.com/today ok")
+        reply = "Sumber: https://www.weather.com/today"
+        self.assertEqual(_guard_unsourced_links(reply, ctx), reply)
+        # A genuinely invented domain is still flagged.
+        bad = "Sumber: https://made-up-source.example"
+        self.assertIn("belum terverifikasi", _guard_unsourced_links(bad, ctx))
+
+    def test_user_bullet_message_stays_in_tail(self):
+        # A user's own bullet list is not an FS dump — dropping it made the
+        # agent look amnesiac about the request it was just given.
+        user_msg = ("tolong buat laporan berisi:\n- pendahuluan\n- metode\n"
+                    "- hasil\n- diskusi\n- kesimpulan\n- lampiran")
+        self.assertFalse(composer._looks_like_fs_dump(user_msg, "user"))
+        # The same shape from the agent is still filtered.
+        self.assertTrue(composer._looks_like_fs_dump(
+            "isi folder:\n- a\n- b\n- c\n- d\n- e\n- f", "agent"))
+        # A user PASTING an actual tree is still treated as a dump.
+        tree = "\n".join("├── folder%d" % i for i in range(5))
+        self.assertTrue(composer._looks_like_fs_dump(tree, "user"))
+
+    def test_user_mention_of_my_drive_stays_in_tail(self):
+        self.assertFalse(composer._looks_like_fs_dump(
+            "coba cek my drive dong", "user"))
+        self.assertTrue(composer._looks_like_fs_dump(
+            "isi My Drive kamu: ...", "agent"))
+
+    def test_fs_preflight_silent_when_no_path(self):
+        # "baca file X" matches the FS regex but has no path — the preflight
+        # must stay silent instead of injecting an "ask for the path" note.
+        from engram.agent import _fs_preflight
+        self.assertIsNone(_fs_preflight("baca file config.py", self.store, "c1"))
+
+    def test_lessons_scoped_per_chat(self):
+        self.store.add_claim("agent", "lesson_a", "chat-1 lesson",
+                             "lesson", 0.9, [], "c1")
+        self.store.add_claim("agent", "lesson_b", "chat-2 lesson",
+                             "lesson", 0.9, [], "c2")
+        self.store.add_claim("agent", "lesson_c", "global lesson",
+                             "lesson", 0.9, [], None)
+        values = {r["value"] for r in self.store.recent_lessons(8, chat_id="c1")}
+        self.assertIn("chat-1 lesson", values)
+        self.assertIn("global lesson", values)
+        self.assertNotIn("chat-2 lesson", values)
+
+    def test_temperature_config_parses(self):
+        import importlib
+        os.environ["ENGRAM_TEMPERATURE"] = "0.3"
+        try:
+            importlib.reload(config)
+            self.assertEqual(config.TEMPERATURE, 0.3)
+        finally:
+            del os.environ["ENGRAM_TEMPERATURE"]
+            importlib.reload(config)
+        self.assertIsNone(config.TEMPERATURE)
+
+
+class BeliefHygieneTests(unittest.TestCase):
+    """Quarantine, /forget, /audit scoping, and the contradiction sweep."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.store = Store(self.path)
+
+    def tearDown(self):
+        self.store.close()
+        os.unlink(self.path)
+
+    def test_quarantine_closes_poisoned_claims(self):
+        good = self.store.add_claim("user", "works_at", "Acme", "fact", 0.9, [], "c1")
+        self.store.add_claim("agent", "lesson_x",
+                             "create_document silent-fail on server engram",
+                             "lesson", 0.9, [], "c1")
+        self.store.add_claim("user", "d_drive_contents", "Sandbox, KCL",
+                             "fact", 0.9, [], "c1")
+        n = self.store.quarantine_poisoned_claims()
+        self.assertEqual(n, 2)
+        active = {c["id"] for c in self.store.active_claims()}
+        self.assertEqual(active, {good["id"]})
+        # Idempotent: a second pass finds nothing.
+        self.assertEqual(self.store.quarantine_poisoned_claims(), 0)
+
+    def test_maintain_memory_reports_quarantine(self):
+        self.store.add_claim("agent", "root_folder_layout", "a, b, c",
+                             "fact", 0.9, [], "c1")
+        stats = self.store.maintain_memory()
+        self.assertEqual(stats["quarantined"], 1)
+
+    def test_retire_claim_scoped_to_chat(self):
+        mine = self.store.add_claim("user", "food_preference", "sate",
+                                    "preference", 0.9, [], "c1")
+        theirs = self.store.add_claim("user", "food_preference", "pizza",
+                                      "preference", 0.9, [], "c2")
+        # cannot retire another chat's claim
+        self.assertFalse(self.store.retire_claim(theirs["id"], "c1"))
+        self.assertTrue(self.store.retire_claim(mine["id"], "c1"))
+        # already closed → False
+        self.assertFalse(self.store.retire_claim(mine["id"], "c1"))
+
+    def test_active_claims_scoped_to_chat(self):
+        self.store.add_claim("user", "a", "1", "fact", 0.9, [], "c1")
+        self.store.add_claim("user", "b", "2", "fact", 0.9, [], "c2")
+        self.store.add_claim("user", "c", "3", "fact", 0.9, [], None)
+        preds = {c["predicate"] for c in self.store.active_claims(chat_id="c1")}
+        self.assertEqual(preds, {"a", "c"})
+
+    def test_mark_disputed_lowers_confidence_and_renders_tag(self):
+        a = self.store.add_claim("user", "location", "Berlin", "fact", 0.9, [], "c1")
+        b = self.store.add_claim("user", "commute", "Paris office daily",
+                                 "fact", 0.9, [], "c1")
+        self.assertEqual(self.store.mark_disputed([a["id"], b["id"]]), 2)
+        row = next(c for c in self.store.active_claims() if c["id"] == a["id"])
+        self.assertEqual(row["disputed"], 1)
+        self.assertAlmostEqual(row["confidence"], 0.63, places=4)
+        system, _ = composer.build_context(self.store, "c1", "where do I live? location")
+        self.assertIn("DISPUTED", system)
+
+    def test_sweep_marks_conflicts_and_ignores_hallucinated_ids(self):
+        from engram import consolidator
+        a = self.store.add_claim("user", "location", "Berlin", "fact", 0.9, [], "c1")
+        b = self.store.add_claim("user", "commute", "Paris office daily",
+                                 "fact", 0.9, [], "c1")
+        real_extract = consolidator.llm.extract
+        calls = []
+
+        def fake_extract(system, user_text, schema, max_tokens=4000):
+            calls.append(user_text)
+            return {"conflicts": [
+                {"id_a": a["id"], "id_b": b["id"], "reason": "can't commute daily"},
+                {"id_a": 9999, "id_b": b["id"], "reason": "hallucinated id"},
+            ]}
+
+        consolidator.llm.extract = fake_extract
+        try:
+            found = consolidator.sweep_contradictions(self.store)
+        finally:
+            consolidator.llm.extract = real_extract
+        self.assertEqual(len(found), 1)
+        self.assertEqual({found[0]["id_a"], found[0]["id_b"]}, {a["id"], b["id"]})
+        rows = {c["id"]: c for c in self.store.active_claims()}
+        self.assertEqual(rows[a["id"]]["disputed"], 1)
+        self.assertEqual(rows[b["id"]]["disputed"], 1)
+
+    def test_sweep_skips_disputed_and_sparse_subjects(self):
+        from engram import consolidator
+        self.store.add_claim("user", "location", "Berlin", "fact", 0.9, [], "c1")
+        # only one claim for the subject → no LLM call at all
+        real_extract = consolidator.llm.extract
+        consolidator.llm.extract = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("extract must not be called"))
+        try:
+            self.assertEqual(consolidator.sweep_contradictions(self.store), [])
+        finally:
+            consolidator.llm.extract = real_extract
+
+
 if __name__ == "__main__":
     unittest.main()

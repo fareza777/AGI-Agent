@@ -118,17 +118,23 @@ def _convert_messages(messages: list, image_fn) -> list:
 
 
 def chat(system: str, messages: list, max_tokens: int = None, ctx=None,
-         on_delta=None) -> str:
+         on_delta=None, force_tools: bool = False) -> str:
     """Conversational turn. When ctx (a tools.ToolContext) is given, the model
     gets the full tool set and we run the agentic loop until it stops calling
     tools (capped at config.MAX_TOOL_ITERS round trips).
 
     on_delta(accumulated_text): optional callback fed streaming text of the
-    current response (anthropic provider only) for a live-updating reply."""
+    current response (anthropic provider only) for a live-updating reply.
+
+    force_tools: require a tool call on the FIRST model response of this turn
+    (tool_choice any/required). Used by the stall-retry path: a model that
+    narrates file work instead of doing it cannot comply with text again."""
     max_tokens = max_tokens or config.MAX_OUTPUT_TOKENS
     if config.PROVIDER == "anthropic":
-        return _anthropic_chat(system, messages, max_tokens, ctx, on_delta)
-    return _openai_chat(config.CHAT_MODEL, system, messages, max_tokens, ctx)
+        return _anthropic_chat(system, messages, max_tokens, ctx, on_delta,
+                               force_tools=force_tools)
+    return _openai_chat(config.CHAT_MODEL, system, messages, max_tokens, ctx,
+                        force_tools=force_tools)
 
 
 def extract(system: str, user_text: str, schema: dict, max_tokens: int = 4000) -> dict:
@@ -186,7 +192,7 @@ def _anthropic_one(messages, params, on_delta):
 
 
 def _anthropic_chat(system: str, messages: list, max_tokens: int, ctx,
-                    on_delta=None) -> str:
+                    on_delta=None, force_tools: bool = False) -> str:
     params = dict(
         model=config.CHAT_MODEL,
         max_tokens=max_tokens,
@@ -195,12 +201,19 @@ def _anthropic_chat(system: str, messages: list, max_tokens: int, ctx,
     )
     if ctx is not None:
         params["tools"] = tools.tool_specs()
+        if force_tools:
+            # Forcing a tool call is incompatible with extended thinking, so
+            # drop thinking for this (retry) turn. Cleared after the first
+            # response so the model can still produce a final text answer.
+            params.pop("thinking", None)
+            params["tool_choice"] = {"type": "any"}
 
     stream = on_delta is not None and config.STREAM_REPLIES
     messages = _convert_messages(messages, _image_blocks_anthropic)
     for _ in range(config.MAX_TOOL_ITERS):
         _cache_conversation_prefix(messages)
         response = _anthropic_one(messages, params, on_delta if stream else None)
+        params.pop("tool_choice", None)
         usage = getattr(response, "usage", None)
         if usage is not None:
             _record_usage(getattr(usage, "input_tokens", 0),
@@ -407,20 +420,36 @@ def _merge_consecutive(messages: list) -> list:
     return out
 
 
-def _openai_chat(model: str, system: str, messages: list, max_tokens: int, ctx) -> str:
+def _openai_chat(model: str, system: str, messages: list, max_tokens: int, ctx,
+                 force_tools: bool = False) -> str:
     convo = _merge_consecutive(
         [{"role": "system", "content": system}]
         + _convert_messages(messages, _image_blocks_openai))
     payload = {"model": model, "max_tokens": max_tokens, "messages": convo}
+    if config.TEMPERATURE is not None:
+        payload["temperature"] = config.TEMPERATURE
     if ctx is not None:
         payload["tools"] = tools.openai_tool_specs()
+        if force_tools:
+            # Require a real tool call on the first response of this retry
+            # turn — a prompt nudge alone is ignored by weaker tool-callers.
+            payload["tool_choice"] = "required"
 
     _MAX_TOOL_RESULT = 4000
     _SHRINK_TOOLS = frozenset({"create_document"})
     _SHRINK_ARG_LIMIT = 1500
 
     for _ in range(config.MAX_TOOL_ITERS):
-        msg = _openai_vision_request(payload)
+        try:
+            msg = _openai_vision_request(payload)
+        except LLMError as exc:
+            # Some endpoints reject tool_choice="required" — degrade to the
+            # plain retry rather than failing the whole turn.
+            if exc.status != 400 or "tool_choice" not in payload:
+                raise
+            payload.pop("tool_choice", None)
+            msg = _openai_vision_request(payload)
+        payload.pop("tool_choice", None)
         if not (msg.get("tool_calls") or []) or ctx is None:
             return _visible_text(msg)
         # Echo back ONLY the standard fields. Some models attach extras

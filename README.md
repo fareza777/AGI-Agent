@@ -208,6 +208,9 @@ Then come back tomorrow, next week, next year, and ask. Commands:
 | Command | What it does |
 |---|---|
 | `/memory <query>` | Search what the agent believes, with confidence + dates |
+| `/audit [n]` | List the newest active beliefs with their ids |
+| `/forget <id>` | Close a wrong belief (history is kept, it just stops being believed) |
+| `/good` / `/bad <reason>` | Rate the last answer — explicit outcome signal for the learning loop |
 | `/history <subject> <attribute>` | Timeline of one belief slot — see supersession in action |
 | `/goals` / `/goal <text>` / `/done <id>` | Long-term goal tree |
 | `/reminders` | Pending scheduled reminders |

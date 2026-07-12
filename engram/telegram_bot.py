@@ -184,6 +184,12 @@ Perintah:
 
 /history <subjek> <atribut> — riwayat satu keyakinan (lihat perubahan)
 
+/audit [n] — daftar keyakinan aktif terbaru beserta id-nya
+
+/forget <id> — tutup keyakinan yang salah (riwayat tetap tersimpan)
+
+/good · /bad <alasan> — nilai jawaban terakhir; jadi bahan belajar saya
+
 /goals — daftar goal aktif
 
 /goal <teks> — tambah goal
@@ -300,6 +306,10 @@ class TelegramBot:
         ("menu", "Tombol aksi cepat"),
         ("help", "Bantuan & daftar perintah"),
         ("memory", "Lihat beberapa belief terbaru"),
+        ("audit", "Daftar keyakinan aktif + id"),
+        ("forget", "Hapus keyakinan yang salah"),
+        ("good", "Tandai jawaban terakhir bagus"),
+        ("bad", "Tandai jawaban terakhir salah"),
         ("goals", "Daftar goal aktif"),
         ("reminders", "Pengingat terjadwal"),
         ("tasks", "Tugas otomatis terjadwal"),
@@ -615,6 +625,68 @@ class TelegramBot:
                 for c in claims
             ]
             self.send(chat_id, "Yang saya ingat:\n\n" + "\n".join(lines))
+        elif cmd == "/audit":
+            limit = int(arg) if arg.isdigit() else 15
+            claims = self.store.active_claims(limit=limit, chat_id=chat_id)
+            if not claims:
+                self.send(chat_id, "Belum ada keyakinan aktif.")
+                return
+            lines = [
+                f"#{c['id']} {c['subject']} | {c['predicate']} = {c['value'][:80]}\n"
+                f"  [{c['kind']}, conf {c['confidence']:.2f}, sejak {c['valid_from'][:10]}]"
+                for c in claims
+            ]
+            self.send(
+                chat_id,
+                "Keyakinan aktif terbaru (hapus yang salah dengan /forget <id>):\n\n"
+                + "\n".join(lines),
+            )
+        elif cmd == "/forget":
+            if not arg.isdigit():
+                self.send(chat_id, "Pakai: /forget <id keyakinan> (lihat id di /audit)")
+                return
+            if not self.store.retire_claim(int(arg), chat_id):
+                self.send(chat_id, f"Keyakinan #{arg} tidak ditemukan / sudah nonaktif.")
+                return
+            self.store.log_event(
+                "user", "message",
+                f"[FEEDBACK] Keyakinan memori #{arg} salah — user menghapusnya "
+                f"lewat /forget.", chat_id,
+            )
+            self.send(chat_id, f"Oke, keyakinan #{arg} saya tutup — tidak akan "
+                               f"saya percaya lagi. Riwayatnya tetap tersimpan.")
+        elif cmd in ("/good", "/bad"):
+            # Explicit outcome signal (S10). Logged as a normal user message so
+            # the consolidation engine distills it into a lesson naturally.
+            last = next(
+                (e["content"] for e in reversed(self.store.recent_events(chat_id, 8))
+                 if e["actor"] == "agent"), "")
+            snippet = (last[:200] + "…") if len(last) > 200 else last
+            if cmd == "/good":
+                self.store.log_event(
+                    "user", "message",
+                    f"[FEEDBACK 👍] Jawaban terakhir bagus"
+                    + (f": {arg}" if arg else ".")
+                    + (f' (jawaban: "{snippet}")' if snippet else ""),
+                    chat_id,
+                )
+                self.send(chat_id, "Siap, dicatat. 👍")
+            else:
+                if not arg:
+                    self.send(chat_id,
+                              "Pakai: /bad <apa yang salah> — biar saya belajar "
+                              "persisnya (contoh: /bad formatnya kepanjangan).")
+                    return
+                self.store.log_event(
+                    "user", "message",
+                    f"[FEEDBACK 👎] Jawaban terakhir bermasalah: {arg}."
+                    f' (jawaban yang dimaksud: "{snippet}") — sinyal outcome '
+                    f"eksplisit; suling lesson yang actionable dari ini.",
+                    chat_id,
+                )
+                self.send(chat_id,
+                          "Dicatat — ini masuk memori pelajaran saya supaya "
+                          "tidak terulang. 🙏")
         elif cmd == "/history":
             bits = arg.split()
             if len(bits) < 2:
@@ -661,6 +733,7 @@ class TelegramBot:
             try:
                 stats = consolidator.consolidate(self.store)
                 insights = consolidator.reflect(self.store, chat_id)
+                conflicts = consolidator.sweep_contradictions(self.store)
                 drafts = skill_compiler.mine(self.store)
             except Exception:
                 log.exception("manual reflect failed")
@@ -673,6 +746,15 @@ class TelegramBot:
             if insights:
                 out += "\n\nInsight baru:\n" + "\n".join(
                     f"• {i['value']}" for i in insights
+                )
+            if conflicts:
+                out += (
+                    f"\n\n⚠️ {len(conflicts)} pasang keyakinan saling "
+                    "bertentangan — saya tandai DISPUTED:\n" + "\n".join(
+                        f"• #{c['id_a']} vs #{c['id_b']}: {c['reason']}"
+                        for c in conflicts
+                    ) + "\nCek dengan /audit, koreksi dengan /forget <id> atau "
+                        "beri tahu saya mana yang benar."
                 )
             if drafts:
                 out += "\n\nDraft skill baru dari pengalaman kita:\n" + "\n".join(

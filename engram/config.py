@@ -58,6 +58,12 @@ CONVERSATION_TAIL = 16  # recent events included verbatim
 # to fit under this so context can't silently balloon cost or truncate tool
 # JSON. Static identity/instructions/capabilities are always kept.
 MAX_CONTEXT_TOKENS = int(os.environ.get("ENGRAM_MAX_CONTEXT_TOKENS", "12000"))
+# Sampling temperature for OpenAI-compatible providers (unset = provider
+# default). Lower values (0.2–0.4) measurably reduce fabricated names/links on
+# weaker models; check your model's recommended range before overriding.
+# The anthropic provider ignores this (adaptive thinking manages sampling).
+_TEMP = os.environ.get("ENGRAM_TEMPERATURE", "").strip()
+TEMPERATURE = float(_TEMP) if _TEMP else None
 # Tool layer
 MAX_TOOL_ITERS = int(os.environ.get("ENGRAM_MAX_TOOL_ITERS", "14"))  # tool round trips/turn
 SKILLS_DIR = PROJECT_ROOT / "skills"
