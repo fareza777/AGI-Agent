@@ -17,6 +17,7 @@ from engram.llm import parse_json, strip_reasoning  # noqa: E402
 from engram.tools import ToolContext, run_tool  # noqa: E402
 from engram.agent import (  # noqa: E402
     _guard_file_claims, _execution_directive, _should_retry_for_tools,
+    _grounding_directive, _guard_ungrounded_report,
 )
 from engram.composer import _filter_stale_lessons  # noqa: E402
 
@@ -1433,6 +1434,62 @@ class OfficecliToolTests(unittest.TestCase):
             cfg.ENABLE_OFFICECLI = old
             store.close()
             os.unlink(path)
+
+
+class GroundingGuardTests(unittest.TestCase):
+    """Anti-hallucination: factual reports must be web-grounded, and an
+    ungrounded one gets flagged (the 'ChatGPT 5.6 report from nothing' bug)."""
+
+    def _ctx(self, grounding=0, produced=None, tool_output=None):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        store = Store(path)
+        ctx = ToolContext(store, "c1")
+        ctx.grounding_calls = grounding
+        ctx.produced_files = produced or []
+        ctx.tool_output = tool_output or []
+        self.addCleanup(lambda: (store.close(), os.unlink(path)))
+        return ctx
+
+    def test_directive_fires_for_report_requests(self):
+        self.assertIn("GROUNDING", _grounding_directive("buat laporan tema ChatGPT 5.6"))
+        self.assertIn("GROUNDING", _grounding_directive("tolong analisis pasar AI 2026"))
+
+    def test_directive_silent_for_casual_chat(self):
+        self.assertEqual(_grounding_directive("hai, apa kabar?"), "")
+        self.assertEqual(_grounding_directive("ingatkan aku jam 9"), "")
+
+    def test_ungrounded_report_with_sources_is_flagged(self):
+        ctx = self._ctx(grounding=0)
+        reply = ("Laporan selesai.\n\nSumber: OpenAI Changelog Mei 2026, "
+                 "laporan pasar a16z.")
+        out = _guard_ungrounded_report(reply, ctx, "buat laporan tema ChatGPT 5.6")
+        self.assertIn("BELUM terverifikasi", out)
+
+    def test_stat_heavy_report_is_flagged(self):
+        ctx = self._ctx(grounding=0)
+        reply = "Pangsa pasar 63,4%, retensi 74%, harga $200/bln, naik 38% YoY."
+        out = _guard_ungrounded_report(reply, ctx, "analisis pasar")
+        self.assertIn("terverifikasi", out)
+
+    def test_grounded_report_not_flagged(self):
+        ctx = self._ctx(grounding=2)  # web_search actually ran
+        reply = "Sumber: hasil pencarian. Pangsa 63%, 74%, 38% YoY."
+        out = _guard_ungrounded_report(reply, ctx, "buat laporan pasar")
+        self.assertEqual(out, reply)
+
+    def test_non_report_not_flagged(self):
+        ctx = self._ctx(grounding=0)
+        reply = "Oke, sudah aku catat. Harga kopi $5 tadi ya."
+        out = _guard_ungrounded_report(reply, ctx, "catat pengeluaranku")
+        self.assertEqual(out, reply)
+
+    def test_generate_docx_phrasing_triggers_retry(self):
+        # the exact stall phrasing that slipped through before
+        ctx = self._ctx(grounding=0)
+        self.assertTrue(_should_retry_for_tools(
+            "Draft tersimpan. Sekarang generate docx-nya dengan kualitas terbaik.",
+            "buat laporan word", ctx))
 
 
 if __name__ == "__main__":

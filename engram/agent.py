@@ -43,14 +43,17 @@ _WHERE_FILE_RE = re.compile(
 # ulang .md draft", "Plan: ... generate versi 2" — but emitted no tool call.
 # This is the dominant stall: it describes the work instead of doing it.
 _PROMISE_RE = re.compile(
-    r"(create_document|write_file|edit_file|send_file|"
+    r"(create_document|write_file|edit_file|send_file|officecli|"
     r"(tulis|menulis)\s+ulang|rewrite|"
-    r"generate\s+(versi|ulang|dokumen|file|baru)|"
+    # "generate docx-nya", "generate laporan", "generate versi 2", "generate ppt"
+    r"generate\s+(versi|ulang|dokumen|file|baru|docx|word|ppt|pptx|slide|"
+    r"laporan|report|excel|xlsx|dokumennya|docx-nya|filenya)|"
     # "langsung render ke .docx", "tinggal render", "render ke pdf", "sudah ada draf"
     r"\brender\w*\b|(sudah|udah|tinggal)\s+(ada\s+)?(draf|draft|render)|"
-    r"(langsung|tinggal)\s+(render|buat|bikin|generate|kirim|export|susun)|"
-    r"(akan|aku|saya|nanti|lalu|kemudian|terus)\b[^.\n]{0,60}"
-    r"(create_document|write_file|generate|render|tulis ulang|buat\s+(file|dokumen|docx|laporan))|"
+    r"(langsung|tinggal|sekarang)\s+(render|buat|bikin|generate|kirim|export|susun)|"
+    r"(akan|aku|saya|nanti|lalu|kemudian|terus|sekarang)\b[^.\n]{0,60}"
+    r"(create_document|write_file|officecli|generate|render|tulis ulang|"
+    r"buat\s+(file|dokumen|docx|laporan))|"
     r"^\s*(plan|rencana)\s*:)",
     re.I | re.M,
 )
@@ -377,6 +380,68 @@ def _guard_unsourced_links(reply: str, ctx: ToolContext) -> str:
     )
 
 
+# A request that asks for a factual write-up about the outside world (product,
+# company, person, market, event) — the class that must be web-grounded, unlike
+# a personal/creative note the model can write from the conversation alone.
+_REPORT_RE = re.compile(
+    r"(laporan|analis\w+|riset|research|report|makalah|white\s*paper|"
+    r"bandingkan|perbanding\w+|benchmark|tren\b|market|pasar|profil|"
+    r"ulasan|review|studi|kajian)",
+    re.I,
+)
+# The reply/document cites sources or is dense with hard statistics — exactly
+# what must not be fabricated. Used only as a backstop signal when 0 web calls ran.
+_CITES_RE = re.compile(
+    r"(sumber\s*:|source\s*:|referensi\s*:|menurut\s+\w+|"
+    r"berdasarkan\s+(data|laporan|riset|studi))",
+    re.I,
+)
+_STAT_RE = re.compile(r"\d[\d.,]*\s*(%|\$|juta|miliar|billion|token|arr|yoy)", re.I)
+_GROUNDING_DIRECTIVE = (
+    "\n\n## GROUNDING (giliran ini)\n"
+    "Permintaan ini tampak seperti laporan/analisis faktual. Untuk fakta APA PUN "
+    "tentang produk, perusahaan, orang, harga, benchmark, pangsa pasar, atau "
+    "peristiwa yang tidak kamu ketahui pasti dari MEMORY, kamu WAJIB "
+    "web_search / fetch_url dulu di giliran ini sebelum menulis. DILARANG "
+    "mengarang angka, benchmark, harga, statistik, atau sumber ('Sumber: ...'). "
+    "Kalau setelah mencari kamu tidak menemukan bukti kredibel bahwa topiknya "
+    "nyata (mis. sebuah rilis produk yang mungkin belum ada), JANGAN buat "
+    "dokumen — katakan jujur bahwa kamu tidak menemukan sumbernya dan tanyakan "
+    "apakah maksud pengguna sesuatu yang lain."
+)
+
+
+def _grounding_directive(user_text: str) -> str:
+    """System-prompt addendum pushing web grounding for factual-report turns."""
+    return _GROUNDING_DIRECTIVE if _REPORT_RE.search(user_text or "") else ""
+
+
+def _guard_ungrounded_report(reply: str, ctx: ToolContext, user_text: str = "") -> str:
+    """Backstop: a factual report that ran with ZERO web_search/fetch_url this
+    turn but produced a document or cites sources/statistics is almost certainly
+    fabricated (the 'ChatGPT 5.6 report from nothing' failure). We can't unmake
+    the file, but we warn — honestly — that its facts weren't verified."""
+    if ctx.grounding_calls > 0:
+        return reply
+    if not _REPORT_RE.search(user_text or ""):
+        return reply
+    cites = bool(_CITES_RE.search(reply))
+    stat_heavy = len(_STAT_RE.findall(reply)) >= 3
+    # A produced document on a report turn is itself the strong signal, even if
+    # the chat reply is terse — but only warn when there's factual content at
+    # stake (cites/stats), so a purely personal 'laporan aktivitasku' is spared.
+    if not (cites or stat_heavy or (ctx.produced_files and _CITES_RE.search(
+            "\n".join(ctx.tool_output)))):
+        return reply
+    return (
+        f"{reply}\n\n"
+        "⚠️ Catatan sistem: laporan ini disusun TANPA pencarian web (0 "
+        "web_search) pada giliran ini, jadi angka, benchmark, harga, dan sumber "
+        "di dalamnya BELUM terverifikasi dan bisa jadi karangan. Minta saya "
+        "web_search sumbernya dulu sebelum kamu memakainya."
+    )
+
+
 class Agent:
     def __init__(self, store: Store = None):
         self.store = store or Store()
@@ -424,6 +489,9 @@ class Agent:
         # never appended to the user message — embedding "instructions" in user
         # content makes injection-aware models reject it AND the real request.
         system += _execution_directive(user_text, self.store, chat_id)
+        # For factual-report requests, push web grounding into the system prompt
+        # so the model searches before writing instead of fabricating.
+        system += _grounding_directive(user_text)
         # FS preflight: inject real list_dir output for drive/folder queries
         # so the model has ground truth and can't invent folder names.
         fs_note = _fs_preflight(user_text, self.store, chat_id)
@@ -489,6 +557,7 @@ class Agent:
         reply = _guard_fs_claims(reply, ctx)
         reply = _guard_file_claims(reply, ctx, user_text, self.store, chat_id)
         reply = _guard_unsourced_links(reply, ctx)
+        reply = _guard_ungrounded_report(reply, ctx, user_text)
         self.store.log_event("agent", "message", reply, chat_id)
         # Inline trigger: consolidate when enough raw experience has piled up,
         # so memory stays fresh even between background passes.

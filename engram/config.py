@@ -65,7 +65,7 @@ MAX_CONTEXT_TOKENS = int(os.environ.get("ENGRAM_MAX_CONTEXT_TOKENS", "12000"))
 _TEMP = os.environ.get("ENGRAM_TEMPERATURE", "").strip()
 TEMPERATURE = float(_TEMP) if _TEMP else None
 # Tool layer
-MAX_TOOL_ITERS = int(os.environ.get("ENGRAM_MAX_TOOL_ITERS", "14"))  # tool round trips/turn
+MAX_TOOL_ITERS = int(os.environ.get("ENGRAM_MAX_TOOL_ITERS", "20"))  # tool round trips/turn
 SKILLS_DIR = PROJECT_ROOT / "skills"
 REMINDER_POLL_SEC = 30  # scheduler tick
 # Digital-assistant workspace. All file/document tools are sandboxed to dirs in

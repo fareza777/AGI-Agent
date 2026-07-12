@@ -1,29 +1,50 @@
 ---
 name: engram_workspace
-description: Save agent outputs to the user's personal Engram workspace on G: drive (G:\My Drive\engram workspace) inside type-based subfolders (Laporan, Foto, Dokumen, Surat, Spreadsheet, etc.). USE WHEN: user says "simpan di workspace", "save ke engram", "simpan ke G", or asks to save generated files anywhere by default.
-status: draft
-version: 1
+description: Save finished deliverables (laporan, foto, spreadsheet, presentasi, surat, dokumen) to the user's Google Drive workspace, organized into type-based subfolders. USE WHEN the user says "simpan di workspace", "save ke engram", "simpan ke G:", or asks to store a generated file on their Drive.
+status: active
+version: 2
 ---
-1. **Confirm the base path** is `G:\My Drive\engram workspace\` (this is the user's standing Engram workspace on Google Drive, established 22 Juni 2026). If unsure, call `list_dir` on `G:\My Drive\` first — DO NOT invent folder names from memory.
 
-2. **Identify the file type** of the output the user wants saved:
-   - `.docx` laporan/makalah → `Laporan/`
-   - Foto/gambar (.jpg, .png) → `Foto/`
-   - Surat resmi (lamaran, izin, dll) → `Surat/`
-   - Proposal → `Proposal/`
-   - Spreadsheet (.xlsx) → `Spreadsheet/`
-   - Email draft (text file) → `Email/`
-   - Dokumen umum/other → `Dokumen/`
-   - Source code → `Code/`
+Save the user's finished files to their Google Drive workspace.
 
-3. **Check if the type subfolder already exists** with `list_dir` on the base path. If it doesn't, create it with `run_shell`: `mkdir "G:\My Drive\engram workspace\<Type>"` (use `run_shell`, not `make_dir` — `make_dir` fails on paths with spaces in the parent segment).
+## Canonical root (do NOT guess)
 
-4. **Avoid duplicate folders**: if a variant name exists (e.g. both `Engram Workspace` and `engram workspace`, or `images/` vs `Foto/`), reconcile by moving files into the canonical lowercase type-named folder and removing the duplicate with `run_shell` `rmdir` or `move`.
+The root is exactly:
 
-5. **Save the file** to `G:\My Drive\engram workspace\<Type>\<filename>` using the appropriate tool:
-   - For `create_document` output: the file is created in the local workspace, then `run_shell` `move` it to the target folder.
-   - For images / raw files: `run_shell` `copy` from `inbox\file_N.ext` to the target folder with a descriptive kebab-case filename (e.g. `kegiatan-upacara-rawajati-22juni2026.jpg`).
+    G:\My Drive\engram workspace\
 
-6. **Verify with `list_dir`** on the destination subfolder to confirm the file landed where intended.
+NEVER use `G:\engram workspace` — that path does not exist. `G:\` is the Google
+Drive mount and you **cannot create folders at its root** (make_dir/mkdir there
+fail with WinError 2). Real files live under `My Drive\`. Do not probe the drive
+root and do not loop retrying it — if a write fails, the path is wrong, not the
+tool.
 
-7. **Save user identity facts** (full_name, position/jabatan, NIP) via `remember` whenever the user provides them in context — these get used as signature blocks in official documents. Subject: `user`, predicates: `full_name`, `jabatan`, `nip`. Kind: `fact`, confidence 0.95+.
+## Build local first, then copy (avoids the folder dance)
+
+1. **Generate the document in the LOCAL workspace first** (fast, no Drive quirks):
+   `create_document` / `officecli` write the file into `workspace/`.
+2. **Ensure the destination ONCE** with `make_dir`:
+   `make_dir("G:\My Drive\engram workspace\<Subfolder>")` — parents are created
+   automatically. make_dir handles spaces fine; you do NOT need run_shell/mkdir.
+3. **Move the finished file** there with `move_file`. The file is also delivered
+   to the user over Telegram regardless of the Drive copy.
+
+## Subfolder map (by file type; default `Lainnya\`)
+
+- `.docx` laporan / surat / proposal / makalah  → `Laporan\`
+- `.xlsx` spreadsheet / tracker                  → `Spreadsheet\`
+- `.pptx` presentasi / deck                      → `Presentasi\`
+- `.jpg` / `.png` foto / gambar / dokumentasi    → `Foto\`
+- anything else                                  → `Lainnya\`
+
+## Don't burn tool turns
+
+One correct `make_dir` under `G:\My Drive\engram workspace\` is all it takes. If
+a path fails, STOP and fix the path (almost always the missing `My Drive\`
+prefix) — never fire a chain of run_shell / run_python / mkdir attempts.
+
+## Signature facts
+
+When the user gives identity facts used in official documents (full_name,
+jabatan, NIP), store them with `remember` (subject `user`; predicates
+`full_name`, `jabatan`, `nip`; kind `fact`, confidence 0.95).

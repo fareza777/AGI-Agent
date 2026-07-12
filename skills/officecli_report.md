@@ -9,6 +9,17 @@ Use the `officecli` tool to build polished Office files. It runs the officecli
 binary in your workspace; you pass the subcommand as `command` (without the word
 "officecli"). Deliver the finished file with `send_file`.
 
+**Facts first.** If the report is about the outside world (a product, company,
+person, market, benchmark, event), you MUST web_search / fetch_url for the facts
+BEFORE building the document — never invent numbers, benchmarks, prices, or
+sources. If you can't verify the topic even exists, say so and don't build a
+document. See the GROUNDING directive in your context.
+
+**Build in the LOCAL workspace**, not on `G:\`. Create and edit the file in
+`workspace/` (fast, no Google-Drive quirks). Only after it's finished and sent,
+if the user wants it archived, copy it to `G:\My Drive\engram workspace\<Sub>\`
+(see the engram_workspace skill). Never try to build directly under `G:\`.
+
 ## Golden workflow (do it in this order)
 
 1. **Create the file** (type comes from the extension):
