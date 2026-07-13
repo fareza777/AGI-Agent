@@ -28,6 +28,18 @@ def strip_legacy_system_notes(text: str) -> str:
     return text
 
 
+def strip_system_notes(text: str) -> str:
+    """Remove any ⚠️ Catatan sistem ... paragraph from a string.
+
+    This is used both to clean the model's own output before appending a fresh
+    guard note, and to stop the composer from replaying previous guard notes
+    back into the model as history. It must NOT be used in the final Telegram
+    formatter, because the current turn's guard note should be visible.
+    """
+    return re.sub(r"⚠️ Catatan sistem.*?(?=\n\n|$)", "", text or "",
+                  flags=re.DOTALL).strip()
+
+
 _INJECTION_LEAD = re.compile(
     r"^[\s\S]*?(?:injeksi|injection|pesan tersembunyi|hidden message)"
     r"[\s\S]*?\n---\n",

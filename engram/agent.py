@@ -9,7 +9,7 @@ import os
 import re
 import threading
 import time
-from . import composer, config, consolidator, llm, skill_compiler
+from . import composer, config, consolidator, llm, skill_compiler, telegram_format
 from . import store as store_mod
 from .store import Store
 from .tools import ToolContext
@@ -257,7 +257,7 @@ def _guard_file_claims(
     if ctx.file_tools_called:
         return (
             f"{reply}\n\n"
-            "⚠️ Catatan sistem: tool dokumen dipanggil tapi tidak ada file "
+            "⚠️ Catatan sistem (internal): tool dokumen dipanggil tapi tidak ada file "
             "yang ter-queue. Pembuatan/pengiriman mungkin gagal — coba lagi "
             "atau minta format lain."
         )
@@ -276,7 +276,7 @@ def _guard_file_claims(
         return reply
     return (
         f"{reply}\n\n"
-        "⚠️ Catatan sistem: tidak ada file yang dibuat/dikirim pada giliran "
+        "⚠️ Catatan sistem (internal): tidak ada file yang dibuat/dikirim pada giliran "
         "ini (create_document/send_file tidak dipanggil). File belum sampai "
         "ke chat — minta saya buat/kirim ulang; kali ini saya wajib pakai tool."
     )
@@ -374,7 +374,7 @@ def _guard_unsourced_links(reply: str, ctx: ToolContext) -> str:
     listed = ", ".join(unsourced[:5])
     return (
         f"{reply}\n\n"
-        f"⚠️ Catatan sistem: link berikut tidak berasal dari hasil tool pada "
+        f"⚠️ Catatan sistem (internal): link berikut tidak berasal dari hasil tool pada "
         f"giliran ini dan belum terverifikasi — {listed}. Saya bisa buka dengan "
         f"fetch_url untuk memastikan sebelum Anda mempercayainya."
     )
@@ -437,7 +437,7 @@ def _guard_ungrounded_report(reply: str, ctx: ToolContext, user_text: str = "") 
         return reply
     return (
         f"{reply}\n\n"
-        "⚠️ Catatan sistem: laporan ini disusun TANPA pencarian web (0 "
+        "⚠️ Catatan sistem (internal): laporan ini disusun TANPA pencarian web (0 "
         "web_search) pada giliran ini, jadi angka, benchmark, harga, dan sumber "
         "di dalamnya BELUM terverifikasi dan bisa jadi karangan. Minta saya "
         "web_search sumbernya dulu sebelum kamu memakainya."
@@ -490,10 +490,18 @@ class Agent:
         # Execution directive goes in the SYSTEM prompt (a trusted instruction),
         # never appended to the user message — embedding "instructions" in user
         # content makes injection-aware models reject it AND the real request.
-        system += _execution_directive(user_text, self.store, chat_id)
+        execution_directive = _execution_directive(user_text, self.store, chat_id)
+        system += execution_directive
         # For factual-report requests, push web grounding into the system prompt
         # so the model searches before writing instead of fabricating.
-        system += _grounding_directive(user_text)
+        grounding_directive = _grounding_directive(user_text)
+        system += grounding_directive
+        # Force the first response to be a tool call for clear tool-shaped
+        # turns: factual reports must ground first, and "where is my file"
+        # must produce a file. Other file turns rely on the execution nudge
+        # plus the retry path, so the model can still ask for clarification.
+        force_tools_first = bool(grounding_directive) or bool(
+            _WHERE_FILE_RE.search(user_text or ""))
         # FS preflight: inject real list_dir output for drive/folder queries
         # so the model has ground truth and can't invent folder names.
         fs_note = _fs_preflight(user_text, self.store, chat_id)
@@ -516,7 +524,14 @@ class Agent:
             ctx.fs_calls += 1
             ctx.tool_output.append(fs_note)
         try:
-            reply = llm.chat(system, messages, ctx=ctx, on_delta=on_delta)
+            # Remove any system-note footers the model hallucinated in its own
+            # output before we append the real guard notes — otherwise the new
+            # guard and the old one collide and the Telegram formatter may drop
+            # them both.
+            reply = telegram_format.strip_system_notes(
+                llm.chat(system, messages, ctx=ctx, on_delta=on_delta,
+                         force_tools=force_tools_first)
+            )
             # The model sometimes narrates file work without calling a tool.
             # Re-run with a hard execution nudge — up to twice, escalating —
             # so a "Plan: ... generate versi 2" answer becomes an actual file

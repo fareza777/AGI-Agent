@@ -2,9 +2,14 @@
 """One-off memory audit for engram.db."""
 import os
 import sqlite3
+import sys
 
 from engram import config
 from engram.store import Store
+
+# Windows shells default to cp1252; this script prints Unicode symbols.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 store = Store()
 conn = store._conn
