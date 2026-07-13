@@ -1,6 +1,11 @@
 import os
 import sqlite3
+import sys
 from pathlib import Path
+
+# Windows shells default to cp1252; this script prints Unicode paths.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 ws = Path("workspace")
 print("=== workspace files ===")

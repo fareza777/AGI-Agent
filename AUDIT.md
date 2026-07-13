@@ -127,6 +127,52 @@ termurah yang tersedia.
    flat list tanpa deadline/review; DESIGN.md sudah menspesifikasikan bentuk
    penuhnya.
 
+## Pass 3 — Perbaikan dari audit lanjutan (2026-07-13)
+
+Temuan dan perbaikan kali ini fokus pada **dua celah halusinasi yang tersisa**
+dan dua bug kecil:
+
+### 1. Guard `⚠️ Catatan sistem` hilang sebelum sampai ke user
+
+Masalah: `engram/telegram_format.py` memiliki `strip_legacy_system_notes()`
+yang tepatnya membuang `⚠️ Catatan sistem:` — karena guard anti-halusinasi di
+`engram/agent.py` memakai marker persis `⚠️ Catatan sistem:`, guard tersebut
+**tersaring saat di-render ke Telegram**. Akibatnya:
+
+- Model mengklaim "file sudah dikirim" → agent menambahkan peringatan →
+  formatter membuang peringatan → user tetap melihat klaim palsu.
+- Bot terlihat "suka halusinasi" padahal engine sudah mendeteksinya.
+
+Perbaikan:
+- Guard sekarang memakai marker `⚠️ Catatan sistem (internal):` yang tidak
+  ditangkap `strip_legacy_system_notes()`.
+- `strip_legacy_system_notes()` tetap dipertahankan untuk membersihkan
+  `⚠️ Catatan sistem:` yang model salin dari riwayat lama.
+- `telegram_format.py` menambah `strip_system_notes()` untuk menghapus semua
+  `⚠️ Catatan sistem ...` dari history / output model, sebelum guard baru
+  ditambahkan.
+- `composer.py` membersihkan `⚠️ Catatan sistem` dari `conversation_tail`,
+  mencegah model melihat dan meniru guard miliknya sendiri.
+
+### 2. Tool-call tidak dipaksa pada giliran pertama untuk laporan / "mana file"
+
+Masalah: `force_tools=True` hanya dipakai di retry. Pada giliran pertama,
+  model lemah bisa mengabaikan nudge `EXECUTION` dan langsung menjelaskan
+  rencana atau membuat laporan dari angka karangan.
+
+Perbaikan: `agent.py` sekarang memaksa tool call pada giliran pertama jika:
+- `GROUNDING` aktif (permintaan laporan/analisis faktual), atau
+- pola `WHERE_FILE_RE` cocok ("mana file", "belum sampai", dll.).
+
+Untuk permintaan file lain yang mungkin ambigu, model tetap bisa menanyakan
+  klarifikasi karena `force_tools` tidak diaktifkan — nudge `EXECUTION` dan
+  retry tetap menangkap stall.
+
+### 3. Bug kecil
+
+- `check_memory.py` & `check_recent.py` sekarang `reconfigure` stdout ke UTF-8
+  agar tidak crash di Windows cp1252.
+
 ## Kesimpulan
 
 Fondasi arsitektur sehat; yang perlu dihentikan adalah pola *menambal gejala

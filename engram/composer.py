@@ -19,7 +19,7 @@ Order of assembly (stable prefix first, for prompt caching):
 """
 
 from datetime import datetime, timezone
-from . import config, hygiene, identity, skills
+from . import config, hygiene, identity, skills, telegram_format
 from .store import Store
 
 _INSTRUCTIONS = """\
@@ -276,7 +276,15 @@ def _conversation_tail(store: Store, chat_id: str) -> list:
         if _looks_like_fs_dump(e["content"], e["actor"]):
             continue
         role = "assistant" if e["actor"] == "agent" else "user"
-        messages.append({"role": role, "content": e["content"]})
+        content = e["content"]
+        # Strip the agent's own guard-note footers from history so the model
+        # doesn't see them and start copying "⚠️ Catatan sistem" into its
+        # replies. The user still sees the guard on the turn it was issued.
+        if role == "assistant":
+            content = telegram_format.strip_system_notes(content)
+            if not content:
+                continue
+        messages.append({"role": role, "content": content})
     # API requires the first message to be from the user.
     while messages and messages[0]["role"] != "user":
         messages.pop(0)
